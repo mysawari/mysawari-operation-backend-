@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-const uri = "mongodb+srv://mysawari:xS1v6J12K2nQ94tV@mysawari.9vpt6zf.mongodb.net/mysawari?retryWrites=true&w=majority";
+const uri = process.env.MONGODB_URI || "mongodb://localhost:27017/mysawari";
 
 mongoose.connect(uri)
   .then(async () => {

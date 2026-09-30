@@ -11,7 +11,7 @@ async function run() {
   
   try {
     const mongoose = require("mongoose");
-    const uri = "mongodb+srv://admintech_db_user:8ecIxuNvrEengCuh@cluster0.9vpt6zf.mongodb.net/data";
+    const uri = process.env.MONGODB_URI || "mongodb://localhost:27017/data";
     await mongoose.connect(uri);
     const vehicle = await mongoose.connection.db.collection("vehicles").findOne({});
     const admin = await mongoose.connection.db.collection("users").findOne({role: "SUPER_ADMIN"});
