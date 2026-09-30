@@ -1610,11 +1610,12 @@ export const getActiveHandovers = async (req, res) => {
       // vehicle/user documents — smaller payload, faster to serialize.
       .populate("vehicle.vehicleId", "vehicleName vehicleNumber")
       .populate("createdBy", "fullName")
+      .populate("bookingId", "bookingCode")
       // .lean() skips hydrating full Mongoose documents (getters, virtuals,
       // change tracking) since this is a read-only list response — this
       // alone is typically the single biggest speedup for a GET-list route.
       .select(
-        "customer vehicle trip payment images handoverStatus isDeleted createdAt",
+        "customer vehicle trip payment images handoverStatus isDeleted createdAt bookingId",
       )
       .sort({ createdAt: -1 })
       .lean();
@@ -1648,6 +1649,7 @@ export const getSingleHandover = async (req, res) => {
     })
       .populate("createdBy", "fullName email mobileNumber role")
       .populate("vehicle.vehicleId")
+      .populate("bookingId", "bookingCode")
       .populate("returnDetails.returnedBy", "fullName email mobileNumber role")
       .populate("extensionBills.createdBy", "fullName email mobileNumber role")
       // NEW: who performed each vehicle swap, so the exchange history can
@@ -1668,9 +1670,22 @@ export const getSingleHandover = async (req, res) => {
       .populate("receivedBy", "fullName email mobileNumber role")
       .lean();
 
+    let lastLocation = null;
+    if (handover.customer?.mobileNumber) {
+      try {
+        const Customer = (await import("../models/customer.model.js")).default;
+        const customerDoc = await Customer.findOne({ mobileNumber: handover.customer.mobileNumber }).lean();
+        if (customerDoc && customerDoc.lastLocation) {
+          lastLocation = customerDoc.lastLocation;
+        }
+      } catch (e) {
+        console.error('Error fetching customer location in getSingleHandover:', e);
+      }
+    }
+
     // With .lean(), `handover` is already a plain object — no .toObject()
     // needed (and calling it on a lean object would throw).
-    const data = { ...handover };
+    const data = { ...handover, customerLocation: lastLocation };
 
     // FIX: build the bill the frontend renders straight from the stored
     // payment.billSummary — the single already-computed, already-saved
@@ -2327,7 +2342,7 @@ export const getRentalDetails = async (req, res) => {
     // Mongoose instance methods, virtuals, or Document-only behavior,
     // switch those call sites to work with the plain object first —
     // .lean() objects don't have them.
-    const handover = await Handover.findById(id).lean();
+    const handover = await Handover.findById(id).populate("bookingId", "bookingCode").lean();
 
     if (!handover || handover.isDeleted) {
       return res.status(404).json({
@@ -2338,6 +2353,19 @@ export const getRentalDetails = async (req, res) => {
 
     const billSummary = buildBillSummaryResponse(handover);
 
+    let lastLocation = null;
+    if (handover.customer?.mobileNumber) {
+      try {
+        const Customer = (await import("../models/customer.model.js")).default;
+        const customerDoc = await Customer.findOne({ mobileNumber: handover.customer.mobileNumber }).lean();
+        if (customerDoc && customerDoc.lastLocation) {
+          lastLocation = customerDoc.lastLocation;
+        }
+      } catch (e) {
+        console.error('Error fetching customer location:', e);
+      }
+    }
+
     return res.status(200).json({
       success: true,
       data: {
@@ -2345,6 +2373,8 @@ export const getRentalDetails = async (req, res) => {
 
         customerName: handover.customer?.fullName || "",
         customerPhone: handover.customer?.mobileNumber || "",
+        customerLocation: lastLocation,
+        bookingCode: handover.bookingId?.bookingCode || "",
 
         vehicleId: handover.vehicle?.vehicleId,
         vehicleModel: handover.vehicle?.vehicleName || "",

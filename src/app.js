@@ -8,6 +8,8 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import hpp from "hpp";
 import path from "path";
+import mongoSanitize from "express-mongo-sanitize";
+import xss from "xss-clean";
 
 import authRoutes from "./routes/auth.routes.js";
 import notFound from "./middlewares/notFound.middleware.js";
@@ -20,7 +22,12 @@ import leadRoutes from "./routes/lead.routes.js";
 import bookingRoutes from "./routes/bookingRoutes.js";
 import paymentHistoryRoutes from "./routes/paymentHistory.routes.js"
 import dashboardRoutes from "./routes/dashboard.routes.js"
-
+import notificationRoutes from "./routes/notification.routes.js";
+import offerRoutes from "./routes/offer.routes.js";
+import membershipRoutes from "./routes/membership.routes.js";
+import referralRoutes from "./routes/referral.routes.js";
+import refundRoutes from "./routes/refund.routes.js";
+import extendBookingRoutes from "./routes/extendBooking.routes.js";
 dotenv.config();
 
 const app = express();
@@ -64,6 +71,12 @@ app.use(
 
 // prevent HTTP param pollution
 app.use(hpp());
+
+// data sanitization against NoSQL query injection
+app.use(mongoSanitize());
+
+// data sanitization against XSS
+app.use(xss());
 
 // 🔧 CHANGED: removed duplicate express.static lines, kept only one
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
@@ -133,7 +146,13 @@ app.use("/api/v1/leads", leadRoutes);
 app.use("/api/v1/bookings", bookingRoutes);
 app.use("/api/v1/payments", paymentHistoryRoutes);
 app.use("/api/v1/dashboard", dashboardRoutes);
+app.use("/api/v1/notifications", notificationRoutes);
+app.use("/api/v1/offers", offerRoutes);
+app.use("/api/v1/memberships", membershipRoutes);
+app.use("/api/v1/referrals", referralRoutes);
 
+app.use("/api/v1/refunds", refundRoutes);
+app.use("/api/v1/extensions", extendBookingRoutes);
 
 // 404
 app.use(notFound);

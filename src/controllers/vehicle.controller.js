@@ -52,7 +52,7 @@ export const createVehicle = async (req, res, next) => {
     const images =
       req.files?.map((file) => ({
         url: file.path,
-        public_id: file.filename,
+        publicId: file.filename,
       })) || [];
 
     const vehicle = await Vehicle.create({
@@ -263,23 +263,21 @@ export const getAvailableVehicles = async (req, res, next) => {
       status: "available",
       isDeleted: false,
     })
-      .select(
-        `
-        _id
-        vehicleName
-        vehicleNumber
-        manufacturer
-        model
-        variant
-        color
-        vehicleType
-        seatingCapacity
-        transmission
-        fuelType
-        pricePerDay
-        status
-      `,
-      )
+      .select({
+        _id: 1,
+        vehicleName: 1,
+        vehicleNumber: 1,
+        manufacturer: 1,
+        model: 1,
+        variant: 1,
+        color: 1,
+        vehicleType: 1,
+        seatingCapacity: 1,
+        transmission: 1,
+        fuelType: 1,
+        pricePerDay: 1,
+        status: 1
+      })
       .sort({ vehicleName: 1 })
       .lean();
 
@@ -306,23 +304,21 @@ export const getAll = async (req, res, next) => {
     const vehicles = await Vehicle.find({
       isDeleted: false,
     })
-      .select(
-        `
-        _id
-        vehicleName
-        vehicleNumber
-        manufacturer
-        model
-        variant
-        color
-        vehicleType
-        seatingCapacity
-        transmission
-        fuelType
-        pricePerDay
-        status
-      `,
-      )
+      .select({
+        _id: 1,
+        vehicleName: 1,
+        vehicleNumber: 1,
+        manufacturer: 1,
+        model: 1,
+        variant: 1,
+        color: 1,
+        vehicleType: 1,
+        seatingCapacity: 1,
+        transmission: 1,
+        fuelType: 1,
+        pricePerDay: 1,
+        status: 1
+      })
       .sort({ vehicleName: 1 })
       .lean();
 
@@ -428,24 +424,26 @@ export const updateVehicle = async (req, res, next) => {
     if (req.body.vehicleType !== undefined) {
       const incomingType = String(req.body.vehicleType).trim();
 
-      if (effectiveCategory === "car") {
-        const matched = carVehicleTypes.find(
-          (t) => t.toLowerCase() === incomingType.toLowerCase()
-        );
+      if (incomingType) {
+        if (effectiveCategory === "car") {
+          const matched = carVehicleTypes.find(
+            (t) => t.toLowerCase() === incomingType.toLowerCase()
+          );
 
-        if (!matched) {
+          if (!matched) {
+            return res.status(400).json({
+              success: false,
+              message: `vehicleType must be one of: ${carVehicleTypes.join(", ")}. Received: "${incomingType}"`,
+            });
+          }
+
+          req.body.vehicleType = matched; // normalize casing
+        } else if (effectiveCategory === "bike") {
           return res.status(400).json({
             success: false,
-            message: `vehicleType must be one of: ${carVehicleTypes.join(", ")}. Received: "${incomingType}"`,
+            message: "vehicleType only applies to vehicles with category 'car'",
           });
         }
-
-        req.body.vehicleType = matched; // normalize casing
-      } else {
-        return res.status(400).json({
-          success: false,
-          message: "vehicleType only applies to vehicles with category 'car'",
-        });
       }
     }
 
@@ -482,16 +480,31 @@ export const updateVehicle = async (req, res, next) => {
     }
 
     // -----------------------------------------
-    // Add new images
+    // Handle Images
     // -----------------------------------------
+    let updatedImages = [];
+    
+    if (req.body.existingImages) {
+      const existing = Array.isArray(req.body.existingImages) 
+        ? req.body.existingImages 
+        : [req.body.existingImages];
+        
+      // Keep only images that exist in the request AND are valid Cloudinary URLs (must start with http)
+      updatedImages = vehicle.images.filter(
+        (img) => existing.includes(img.url) && img.url.startsWith("http")
+      );
+    }
+
     if (req.files?.length > 0) {
       const newImages = req.files.map((file) => ({
-        url: `/uploads/vehicles/${file.filename}`,
-        publicId: null,
+        url: file.path,
+        publicId: file.filename,
       }));
 
-      vehicle.images.push(...newImages);
+      updatedImages.push(...newImages);
     }
+    
+    vehicle.images = updatedImages;
 
     await vehicle.save();
 

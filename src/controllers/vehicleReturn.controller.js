@@ -780,6 +780,46 @@ export const receiveVehicle = async (req, res) => {
 
       if (!booking) {
         console.warn(`Booking not found: ${handover.bookingId}`);
+      } else {
+        // --- Referral Reward Logic ---
+        try {
+          const Referral = (await import("../models/referral.model.js")).default;
+          const Customer = (await import("../models/customer.model.js")).default;
+          const SawariCashTransaction = (await import("../models/sawaricash_transaction.model.js")).default;
+          
+          const referral = await Referral.findOne({ 
+            referredMobile: handover.customer.mobileNumber, 
+            status: { $ne: 'rewarded' } 
+          });
+          
+          if (referral) {
+            const commission = Math.round((handover.payment.billSummary.totalAmount || 0) * 0.10);
+            if (commission > 0) {
+              // 1. Credit Referrer's Wallet
+              await Customer.findByIdAndUpdate(referral.referrerId, { $inc: { walletBalance: commission } });
+              
+              // 2. Log Transaction
+              await SawariCashTransaction.create({
+                customerId: referral.referrerId,
+                amount: commission,
+                transactionType: 'credit',
+                reason: 'referral_commission',
+                status: 'completed',
+                description: `10% commission from referred customer's successful ride`
+              });
+              
+              // 3. Mark Referral as Rewarded
+              referral.status = 'rewarded';
+              referral.commissionAmount = commission;
+              referral.rewardBookingId = booking._id;
+              referral.rewardedAt = new Date();
+              await referral.save();
+            }
+          }
+        } catch (refError) {
+          console.error("Referral Commission Error:", refError);
+        }
+        // -----------------------------
       }
     }
 

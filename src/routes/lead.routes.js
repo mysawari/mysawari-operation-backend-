@@ -17,6 +17,7 @@ import {
   getLeads,
   updateBooking,
   updateLead,
+  getCustomerAppLeads,
 } from "../controllers/lead.controller.js";
 import { createLeadActivity, getLeadActivities } from "../controllers/leadActivity.controller.js";
 
@@ -24,6 +25,7 @@ const router = express.Router();
 
 router.get("/dashboard", protect, getLeadDashboardStats);
 router.get("/booking", getBookingsDashboard);
+router.get("/app-leads", protect, getCustomerAppLeads);
 router.get("/", protect, getLeads);
 router.post("/", protect, createLead);
 router.get("/:id", protect, getLeadById);

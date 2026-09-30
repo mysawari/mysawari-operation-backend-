@@ -1,5 +1,6 @@
 const errorHandler = (err, req, res, next) => {
-  let statusCode = res.statusCode === 200 ? 500 : res.statusCode;
+  console.error("Backend Error:", err);
+  let statusCode = err.statusCode || (res.statusCode === 200 ? 500 : res.statusCode);
 
   res.status(statusCode).json({
     success: false,

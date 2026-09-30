@@ -4,6 +4,7 @@ import LeadHistory from "../models/leadHistory.model.js";
 import Booking from "../models/booking.model.js";
 import Vehicle from "../models/vehicle.model.js";
 import PaymentHistory from "../models/paymentHistory.model.js";
+import CustomerAppLead from "../models/customerAppLead.model.js";
 import { sendBookingCreatedMessage } from "../services/wati.service.js";
 
 const dashboardCache = new Map();
@@ -33,6 +34,15 @@ const TAB_BUCKETS = {
 };
 
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const generateBookingCode = (name, phone) => {
+  const prefix = "MS";
+  const nameChar = name ? name.trim().charAt(0).toUpperCase() : "X";
+  const phoneSuffix = phone && phone.length >= 2 ? phone.slice(-2) : "00";
+  const dateDay = String(new Date().getDate()).padStart(2, '0');
+  const randomChars = Math.random().toString(36).substring(2, 6).toUpperCase();
+  return `${prefix}${nameChar}${phoneSuffix}${dateDay}${randomChars}`;
+};
 
 const STATS_CACHE_TTL_MS = 8000;
 const statsCache = new Map();
@@ -707,15 +717,89 @@ export const getLeads = async (req, res) => {
     // Database
     // ==========================================
 
-    const total = await Lead.countDocuments(query);
+    let total = 0;
+    let leads = [];
 
-    const leads = await Lead.find(query)
-      .populate("leadOwner", "fullName email mobileNumber")
-      .populate("createdBy", "fullName email mobileNumber")
-      .sort(sort)
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean();
+    if (tab !== "app_leads") {
+      total = await Lead.countDocuments(query);
+      leads = await Lead.find(query)
+        .populate("leadOwner", "fullName email mobileNumber")
+        .populate("createdBy", "fullName email mobileNumber")
+        .sort(sort)
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean();
+    }
+
+    let mappedCustomerLeads = [];
+    let custTotal = 0;
+    try {
+      let custQuery = {};
+      if (search && search.trim() !== "") {
+        custQuery.$or = [
+          { customerName: { $regex: search.trim(), $options: "i" } },
+          { mobileNumber: { $regex: search.trim(), $options: "i" } },
+          { vehicleName: { $regex: search.trim(), $options: "i" } },
+        ];
+      }
+      
+      if (tab === "app_leads") {
+        custTotal = await CustomerAppLead.countDocuments(custQuery);
+        const customerLeadsRaw = await CustomerAppLead.find(custQuery)
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .lean();
+          
+        console.log("Found CustomerAppLeads:", customerLeadsRaw.length, "Total:", custTotal);
+        
+        mappedCustomerLeads = customerLeadsRaw.map(c => ({
+          _id: c._id,
+          leadId: c._id.toString().substring(0, 8).toUpperCase(),
+          customerName: c.customerName || "App User",
+          mobileNumber: c.mobileNumber,
+          vehicleName: c.vehicleName || "App Inquiry",
+          vehicleType: "car",
+          status: "Enquiry",
+          priority: "high",
+          fromDate: c.fromDate,
+          toDate: c.toDate,
+          createdAt: c.createdAt,
+          updatedAt: c.updatedAt,
+          source: "Customer App",
+          nextFollowupDate: new Date(),
+          isCustomerApp: true
+        }));
+      } else if (page === 1 && tab === "new") {
+        const customerLeadsRaw = await CustomerAppLead.find(custQuery)
+          .sort({ createdAt: -1 })
+          .limit(50)
+          .lean();
+          
+        mappedCustomerLeads = customerLeadsRaw.map(c => ({
+          _id: c._id,
+          leadId: c._id.toString().substring(0, 8).toUpperCase(),
+          customerName: c.customerName || "App User",
+          mobileNumber: c.mobileNumber,
+          vehicleName: c.vehicleName || "App Inquiry",
+          vehicleType: "car",
+          status: "Enquiry",
+          priority: "high",
+          fromDate: c.fromDate,
+          toDate: c.toDate,
+          createdAt: c.createdAt,
+          updatedAt: c.updatedAt,
+          source: "Customer App",
+          nextFollowupDate: new Date(),
+          isCustomerApp: true
+        }));
+      }
+    } catch (err) {
+      console.log("Error fetching CustomerAppLeads:", err.message);
+    }
+
+    const combinedLeads = tab === "app_leads" ? mappedCustomerLeads : [...mappedCustomerLeads, ...leads];
+    const finalTotal = tab === "app_leads" ? custTotal : total + mappedCustomerLeads.length;
 
     // ==========================================
     // Response
@@ -725,10 +809,10 @@ export const getLeads = async (req, res) => {
       success: true,
       page,
       limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-      count: leads.length,
-      data: leads,
+      total: finalTotal,
+      totalPages: Math.ceil(finalTotal / limit),
+      count: combinedLeads.length,
+      data: combinedLeads,
     });
   } catch (error) {
     console.error("Get Leads Error:", error);
@@ -1957,6 +2041,7 @@ export const createLeadBooking = async (req, res, next) => {
       lead: lead._id,
       company: companyId,
       createdBy: req.user._id,
+      bookingCode: generateBookingCode(customerName?.trim() || lead.customerName, mobileNumber?.trim() || lead.mobileNumber),
 
       customerName: customerName?.trim() || lead.customerName,
       mobileNumber: mobileNumber?.trim() || lead.mobileNumber,
@@ -2830,6 +2915,7 @@ export const createBookings = async (req, res, next) => {
           company: companyId,
 
           createdBy: req.user._id,
+          bookingCode: generateBookingCode(customerName, mobileNumber),
 
           customerName: customerName.trim(),
 
@@ -3471,5 +3557,15 @@ export const cancelBooking = async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+};
+
+export const getCustomerAppLeads = async (req, res) => {
+  try {
+    const leads = await CustomerAppLead.find().sort({ createdAt: -1 });
+    res.status(200).json({ success: true, data: leads });
+  } catch (error) {
+    console.error("getCustomerAppLeads error:", error);
+    res.status(500).json({ success: false, message: "Error fetching app leads", error: error.message });
   }
 };

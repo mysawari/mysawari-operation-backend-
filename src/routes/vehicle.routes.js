@@ -45,7 +45,7 @@ router.patch("/maintenance/:id/status", protect, updateMaintenanceStatus);
 // NOT IN USED
 router.get("/:id", getSingleVehicle);
 
-router.put("/update/:id", upload.array("images", 5), updateVehicle);
+router.put("/update/:id", vehicleUpload.array("images", 5), updateVehicle);
 
 router.patch("/status/:id", updateVehicleStatus);
 
