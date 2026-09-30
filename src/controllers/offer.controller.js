@@ -1,7 +1,7 @@
 import axios from "axios";
 import Offer from "../models/offer.model.js";
 
-const CUSTOMER_BACKEND_URL = process.env.CUSTOMER_BACKEND_URL || "http://192.168.29.131:5001";
+const CUSTOMER_BACKEND_URL = process.env.CUSTOMER_BACKEND_URL || "https://mysawari-customer-backend-1.onrender.com";
 const ADMIN_API_KEY = process.env.CUSTOMER_ADMIN_API_KEY || "mysawari_admin_secret_key_84920";
 
 // @desc    Get all offers
