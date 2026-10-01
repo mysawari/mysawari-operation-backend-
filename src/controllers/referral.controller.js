@@ -120,17 +120,17 @@ export const updateWithdrawalStatus = async (req, res) => {
     
     if (status === "released") {
       request.releasedAt = new Date();
-      // Find the pending transaction and mark it completed
-      await SawariCashTransaction.updateMany(
-        { customerId, status: 'pending', transactionType: 'debit' },
+      // Find the specific pending withdrawal transaction and mark it completed
+      await SawariCashTransaction.updateOne(
+        { customerId, status: 'pending', transactionType: 'debit', reason: { $regex: /Withdrawal/i }, amount: request.amount },
         { $set: { status: 'completed' } }
       );
     } else if (status === "rejected") {
       // Refund the amount to wallet
       customer.walletBalance += request.amount;
-      // Mark transaction as refunded
-      await SawariCashTransaction.updateMany(
-        { customerId, status: 'pending', transactionType: 'debit' },
+      // Mark specific transaction as refunded
+      await SawariCashTransaction.updateOne(
+        { customerId, status: 'pending', transactionType: 'debit', reason: { $regex: /Withdrawal/i }, amount: request.amount },
         { $set: { status: 'refunded' } }
       );
     }

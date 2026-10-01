@@ -166,6 +166,11 @@ const bookingSchema = new mongoose.Schema(
     // =========================
     // PRICING
     // =========================
+    membershipDiscount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     payment: {
       vehicleRent: {
         type: Number,

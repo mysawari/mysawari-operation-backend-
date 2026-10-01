@@ -79,18 +79,25 @@ export const updateExtensionStatus = async (req, res) => {
     }
 
     await extension.save();
+    
+    const updatedExtension = await ExtendBooking.findById(id).populate("processedBy", "name");
 
     // TRIGGER PUSH NOTIFICATION TO CUSTOMER
-    if (process.env.FIREBASE_FUNCTION_URL_CUSTOMER && extension.customerId && extension.customerId.mobileNumber) {
-      axios.post(process.env.FIREBASE_FUNCTION_URL_CUSTOMER, {
-        mobile: extension.customerId.mobileNumber,
+    if (process.env.CUSTOMER_BACKEND_URL && extension.customerId) {
+      axios.post(`${process.env.CUSTOMER_BACKEND_URL}/api/notifications`, {
+        target: 'specific',
+        customerId: extension.customerId._id,
         title: `Extension ${status.charAt(0).toUpperCase() + status.slice(1)}`,
         body: `Your booking extension request was ${status}. ${rejectReason ? `Reason: ${rejectReason}` : ''}`,
-        data: { type: "extension_update", bookingId: extension.bookingId }
+        payload: { type: "extension_update", bookingId: extension.bookingId }
+      }, {
+        headers: {
+          'x-admin-key': process.env.CUSTOMER_ADMIN_API_KEY
+        }
       }).catch(err => console.error("Firebase customer notification failed:", err.message));
     }
 
-    res.status(200).json({ success: true, message: `Extension ${status} successfully.`, data: extension });
+    res.status(200).json({ success: true, message: `Extension ${status} successfully.`, data: updatedExtension });
   } catch (error) {
     console.error("updateExtensionStatus Error:", error);
     res.status(500).json({ success: false, message: "Server error", error: error.message });
