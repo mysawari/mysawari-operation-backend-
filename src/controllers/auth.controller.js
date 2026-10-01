@@ -67,13 +67,13 @@ export const registerUser = asyncHandler(async (req, res) => {
 
   const existingUser = await User.findOne({
     $or: [
-      { email: email.toLowerCase() },
+      { email: String(email).toLowerCase() },
       { mobileNumber },
     ],
   });
 
   if (existingUser) {
-    if (existingUser.email === email.toLowerCase()) {
+    if (existingUser.email === String(email).toLowerCase()) {
       throw new ApiError(409, "Email already registered");
     }
 
@@ -85,7 +85,7 @@ export const registerUser = asyncHandler(async (req, res) => {
   const user = await User.create({
     fullName,
     mobileNumber,
-    email: email.toLowerCase(),
+    email: String(email).toLowerCase(),
     businessName,
     password,
     role,
@@ -127,13 +127,13 @@ export const createEmployee = asyncHandler(async (req, res) => {
 
   const existingUser = await User.findOne({
     $or: [
-      { email: email.toLowerCase() },
+      { email: String(email).toLowerCase() },
       { mobileNumber },
     ],
   });
 
   if (existingUser) {
-    if (existingUser.email === email.toLowerCase()) {
+    if (existingUser.email === String(email).toLowerCase()) {
       throw new ApiError(
         409,
         "Email already registered"
@@ -153,7 +153,7 @@ export const createEmployee = asyncHandler(async (req, res) => {
   const employee = await User.create({
     fullName,
     mobileNumber,
-    email: email.toLowerCase(),
+    email: String(email).toLowerCase(),
     businessName:
       superAdmin.businessName,
     password,
@@ -182,11 +182,12 @@ export const loginUser = asyncHandler(async (req, res) => {
   validateLoginInput(req.body);
 
   const { emailOrMobile, password } = req.body;
+  const searchKey = String(emailOrMobile);
 
   const user = await User.findOne({
     $or: [
-      { email: emailOrMobile.toLowerCase() },
-      { mobileNumber: emailOrMobile },
+      { email: searchKey.toLowerCase() },
+      { mobileNumber: searchKey },
     ],
   }).select("+password +refreshToken");
 
@@ -323,7 +324,7 @@ export const resetPassword = asyncHandler(
     }
 
     const user = await User.findOne({
-      email: email.toLowerCase(),
+      email: String(email).toLowerCase(),
     }).select("+password");
 
     if (!user) {
