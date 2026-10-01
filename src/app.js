@@ -8,7 +8,8 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import hpp from "hpp";
 import path from "path";
-import mongoSanitize from "express-mongo-sanitize";
+// import mongoSanitize from "express-mongo-sanitize"; // Incompatible with Express 5
+import rejectOperatorKeys from "./middlewares/sanitize.middleware.js";
 import xss from "xss-clean";
 
 import authRoutes from "./routes/auth.routes.js";
@@ -73,7 +74,7 @@ app.use(
 // app.use(hpp());
 
 // data sanitization against NoSQL query injection
-app.use(mongoSanitize());
+app.use(rejectOperatorKeys);
 
 // data sanitization against XSS (Disabled: incompatible with Express 5)
 // app.use(xss());
