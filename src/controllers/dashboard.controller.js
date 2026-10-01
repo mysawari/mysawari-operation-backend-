@@ -519,6 +519,7 @@ export const getMaintenances = async (req, res, next) => {
     }
 
     const maintenances = await Maintenance.find(filter)
+      .limit(2000)
       .populate("vehicle")
       .populate("createdBy", "name email")
       .sort({ startDate: 1 })

@@ -7,6 +7,7 @@ import User from '../models/user.model.js';
 export const getAllRefunds = async (req, res) => {
   try {
     const refunds = await Refund.find()
+      .limit(500)
       .populate('bookingId')
       .populate('customerId', 'customerName mobileNumber email')
       .populate('processedBy', 'fullName')

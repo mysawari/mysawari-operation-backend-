@@ -7,6 +7,7 @@ import Customer from "../models/customer.model.js";
 export const getMemberships = async (req, res) => {
   try {
     const memberships = await Membership.find()
+      .limit(500)
       .populate("customerId", "customerName mobileNumber email")
       .sort("-createdAt")
       .lean();

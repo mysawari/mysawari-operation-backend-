@@ -47,6 +47,7 @@ export const createExtensionRequest = async (req, res) => {
 export const getAllExtensionRequests = async (req, res) => {
   try {
     const requests = await ExtendBooking.find()
+      .limit(500)
       .populate("customerId", "customerName name mobileNumber")
       .populate("bookingId", "bookingCode vehicleName vehicleNumber pickupTime dropTime toDate")
       .populate("handoverId", "vehicle vehicleHistory trip payment")
