@@ -155,6 +155,11 @@ app.use("/api/v1/referrals", referralRoutes);
 app.use("/api/v1/refunds", refundRoutes);
 app.use("/api/v1/extensions", extendBookingRoutes);
 
+// root health check
+app.get("/", (req, res) => {
+  res.status(200).json({ success: true, message: "MySawari Operation API is running!" });
+});
+
 // 404
 app.use(notFound);
 
