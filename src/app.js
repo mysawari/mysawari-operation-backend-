@@ -69,14 +69,14 @@ app.use(
   })
 );
 
-// prevent HTTP param pollution
-app.use(hpp());
+// prevent HTTP param pollution (Disabled: incompatible with Express 5)
+// app.use(hpp());
 
 // data sanitization against NoSQL query injection
 app.use(mongoSanitize());
 
-// data sanitization against XSS
-app.use(xss());
+// data sanitization against XSS (Disabled: incompatible with Express 5)
+// app.use(xss());
 
 // 🔧 CHANGED: removed duplicate express.static lines, kept only one
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
