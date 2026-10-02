@@ -4,6 +4,30 @@ import VehicleReturn from "../models/vehicleReturn.model.js";
 import Booking from "../models/booking.model.js";
 import PaymentHistory from "../models/paymentHistory.model.js";
 
+const getVehicleCategory = (vehicle) =>
+  String(vehicle?.category || "").toLowerCase().trim() === "bike"
+    ? "bike"
+    : "car";
+
+
+const RETURN_IMAGE_FIELDS = {
+  car: {
+    required: ["vehicleFront", "vehicleRear", "vehicleLeft", "vehicleRight"],
+    optional: [
+      "tyreFrontLeft",
+      "tyreFrontRight",
+      "tyreRearLeft",
+      "tyreRearRight",
+      "spareTyre",
+      "toolkit",
+    ],
+  },
+  bike: {
+    required: ["vehicleFront", "vehicleRear", "vehicleLeft", "vehicleRight"],
+    optional: ["tyreFront", "tyreRear", "helmet", "toolkit"],
+  },
+};
+
 export const receiveVehicle = async (req, res) => {
   try {
     const { handoverId } = req.params;
@@ -23,13 +47,14 @@ export const receiveVehicle = async (req, res) => {
       fuelUsageAmount,
       amountCollected,
       paymentMode,
-      paymentBreakdown, // ADDED: raw breakdown value coming from FormData (arrives as a JSON string)
+      paymentBreakdown, // arrives as a JSON string from FormData
       balanceReason,
       upiLast4,
 
       needsMaintenance,
       maintenanceReason,
       maintenanceDays,
+
     } = req.body;
 
     const files = req.files || {};
@@ -38,22 +63,31 @@ export const receiveVehicle = async (req, res) => {
        BASIC VALIDATION
     ========================== */
 
-    if (!fuelLevel || !kilometersAtReturn) {
+    // FIX: check for missing values explicitly instead of `!fuelLevel`,
+    // so a legitimate fuel level of 0 ("Reserve") is never rejected.
+    const isBlank = (v) => v === undefined || v === null || v === "";
+
+    if (isBlank(fuelLevel) || isBlank(kilometersAtReturn)) {
       return res.status(400).json({
         success: false,
         message: "Fuel level and kilometers at return are required",
       });
     }
 
-    if (
-      !files.vehicleFront?.[0] ||
-      !files.vehicleRear?.[0] ||
-      !files.vehicleLeft?.[0] ||
-      !files.vehicleRight?.[0]
-    ) {
+    const fuelLevelNum = Number(fuelLevel);
+    const kmNum = Number(kilometersAtReturn);
+
+    if (!Number.isFinite(fuelLevelNum) || fuelLevelNum < 0 || fuelLevelNum > 7) {
       return res.status(400).json({
         success: false,
-        message: "Front, Rear, Left and Right vehicle images are required",
+        message: "Fuel level must be between 0 and 7",
+      });
+    }
+
+    if (!Number.isFinite(kmNum) || kmNum < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Kilometers at return must be a valid number",
       });
     }
 
@@ -100,6 +134,28 @@ export const receiveVehicle = async (req, res) => {
     }
 
     /* ==========================
+       CAR / BIKE
+       Read from Vehicle.category in the DB, not trusted from the app.
+    ========================== */
+
+    const vehicleCategory = getVehicleCategory(vehicle);
+    const imageFields = RETURN_IMAGE_FIELDS[vehicleCategory];
+
+    const missingImages = imageFields.required.filter(
+      (key) => !files[key]?.[0],
+    );
+
+    if (missingImages.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Front, Rear, Left and Right ${
+          vehicleCategory === "bike" ? "bike" : "vehicle"
+        } images are required`,
+        missingImages,
+      });
+    }
+
+    /* ==========================
        EXISTING RETURN CHECK
     ========================== */
 
@@ -132,7 +188,40 @@ export const receiveVehicle = async (req, res) => {
       });
     }
 
-    let parsedPaymentBreakdown = { cash: 0, phonePe: 0, razorpay: 0 }; // ADDED
+    if (!Array.isArray(parsedInspection)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid inspection data format",
+      });
+    }
+
+    // Keep only well-formed rows so a bad entry returns a clear 400
+    // instead of a Mongoose validation 500.
+    const ALLOWED_CONDITIONS = ["good", "minor", "major"];
+    parsedInspection = parsedInspection.map((row) => ({
+      itemName: String(row?.itemName || "").trim(),
+      condition: String(row?.condition || "").toLowerCase(),
+      note: String(row?.note || "").trim(),
+    }));
+
+    const badInspectionRow = parsedInspection.find(
+      (row) => !row.itemName || !ALLOWED_CONDITIONS.includes(row.condition),
+    );
+
+    if (badInspectionRow) {
+      return res.status(400).json({
+        success: false,
+        message: `Inspection item "${
+          badInspectionRow.itemName || "unknown"
+        }" is missing a valid condition`,
+      });
+    }
+
+    /* ==========================
+       PAYMENT BREAKDOWN PARSE
+    ========================== */
+
+    let parsedPaymentBreakdown = { cash: 0, phonePe: 0, razorpay: 0 };
 
     try {
       if (paymentBreakdown) {
@@ -151,13 +240,14 @@ export const receiveVehicle = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Invalid payment breakdown format",
-      }); // ADDED
+      });
     }
 
     const ALLOWED_PAYMENT_MODES = ["Cash", "PhonePe", "Razorpay", "Mixed"];
     const normalizedPaymentMode = ALLOWED_PAYMENT_MODES.includes(paymentMode)
       ? paymentMode
       : "Cash";
+
     let normalizedUpiLast4 = [];
 
     try {
@@ -208,7 +298,10 @@ export const receiveVehicle = async (req, res) => {
 
     const isDamaged = hasDamage === true || hasDamage === "true";
 
-    const damageImages = files.damageImages?.map((file) => file.path) || [];
+    // Damage photos are only kept when damage is actually reported.
+    const damageImages = isDamaged
+      ? files.damageImages?.map((file) => file.path) || []
+      : [];
 
     if (isDamaged && damageImages.length === 0) {
       return res.status(400).json({
@@ -219,12 +312,25 @@ export const receiveVehicle = async (req, res) => {
 
     /* ==========================
        ADDITIONAL IMAGES (optional)
-       No validation — user may
-       upload zero, one, or many.
     ========================== */
 
     const additionalImages =
       files.additionalImages?.map((file) => file.path) || [];
+
+    /* ==========================
+       RETURN IMAGES
+       Only the fields that belong to this vehicle's category are stored
+       (car tyre/spare fields stay empty for a bike, and vice versa).
+    ========================== */
+
+    const returnImages = {};
+    [...imageFields.required, ...imageFields.optional].forEach((key) => {
+      returnImages[key] = files[key]?.[0]?.path || "";
+    });
+
+    /* ==========================
+       MAINTENANCE
+    ========================== */
 
     const maintenanceRequired =
       needsMaintenance === true ||
@@ -248,9 +354,9 @@ export const receiveVehicle = async (req, res) => {
       });
     }
 
-    const estimate = Number(repairEstimate) || 0;
+    const estimate = isDamaged ? Number(repairEstimate) || 0 : 0;
 
-    const repairDuration = Number(repairDays) || 0;
+    const repairDuration = isDamaged ? Number(repairDays) || 0 : 0;
 
     /* ==========================
        SETTLEMENT CALCULATIONS
@@ -266,6 +372,13 @@ export const receiveVehicle = async (req, res) => {
     const fuelFine = Number(fuelUsageAmount) || 0;
 
     const collected = Number(amountCollected) || 0;
+
+    if ([lateFine, kmFine, fuelFine, estimate, collected].some((n) => n < 0)) {
+      return res.status(400).json({
+        success: false,
+        message: "Amounts cannot be negative",
+      });
+    }
 
     const totalBalanceAmount =
       pendingAmount + lateFine + kmFine + fuelFine + estimate;
@@ -283,9 +396,17 @@ export const receiveVehicle = async (req, res) => {
       });
     }
 
-    // ADDED: server-side guard mirroring the frontend's mixed-payment
-    // validation — the breakdown total must actually match the amount
-    // collected so settlementDetails and PaymentHistory never drift.
+    // Mirror of the app's validation: the amount collected can never be
+    // more than what is owed (applies to every payment mode).
+    if (collected > totalBalanceAmount) {
+      return res.status(400).json({
+        success: false,
+        message: "Received amount cannot exceed total balance",
+      });
+    }
+
+    // Mixed breakdown must add up to the amount collected so
+    // settlementDetails and PaymentHistory never drift.
     if (normalizedPaymentMode === "Mixed") {
       const mixedTotal =
         parsedPaymentBreakdown.cash +
@@ -306,13 +427,6 @@ export const receiveVehicle = async (req, res) => {
             "Payment breakdown total does not match the amount collected",
         });
       }
-
-      if (mixedTotal > totalBalanceAmount) {
-        return res.status(400).json({
-          success: false,
-          message: "Received amount cannot exceed total balance",
-        });
-      }
     }
 
     /* ==========================
@@ -326,9 +440,10 @@ export const receiveVehicle = async (req, res) => {
     } else if (collected > 0) {
       settlementStatus = "Partially Collected";
     }
+
     /* ==========================
-   TIME CALCULATIONS
-========================== */
+       TIME CALCULATIONS
+    ========================== */
 
     const actualReceivingTime = new Date();
 
@@ -369,12 +484,13 @@ export const receiveVehicle = async (req, res) => {
        CREATE RETURN
     ========================== */
 
+    const maintenanceDaysNum = Number(maintenanceDays) || 0;
+
     const vehicleReturn = await VehicleReturn.create({
       company: companyId,
 
       createdBy: req.user._id,
 
-      // New fields
       receivedBy: req.user._id,
 
       receivingTime: actualReceivingTime,
@@ -391,63 +507,50 @@ export const receiveVehicle = async (req, res) => {
 
       vehicle: vehicle._id,
 
+      vehicleCategory,
+
       customerName: handover.customer?.fullName || "",
 
-      fuelLevel: Number(fuelLevel),
+      fuelLevel: fuelLevelNum,
 
-      kilometersAtReturn: Number(kilometersAtReturn),
+      kilometersAtReturn: kmNum,
 
       hasDamage: isDamaged,
 
-      damageNotes: damageNotes || "",
+      damageNotes: isDamaged ? damageNotes || "" : "",
 
       inspection: parsedInspection,
 
       maintenanceDetails: {
         required: maintenanceRequired,
 
-        reason: maintenanceReason || "",
+        reason: maintenanceRequired ? maintenanceReason || "" : "",
 
-        estimatedDays: Number(maintenanceDays) || 0,
+        estimatedDays: maintenanceRequired ? maintenanceDaysNum : 0,
 
         estimatedCompletionDate: maintenanceRequired
-          ? new Date(Date.now() + Number(maintenanceDays) * 24 * 60 * 60 * 1000)
+          ? new Date(Date.now() + maintenanceDaysNum * 24 * 60 * 60 * 1000)
           : null,
       },
 
       /* ======================
-     VEHICLE RETURN IMAGES
-  ====================== */
-      images: {
-        vehicleFront: files.vehicleFront?.[0]?.path || "",
-        vehicleRear: files.vehicleRear?.[0]?.path || "",
-        vehicleLeft: files.vehicleLeft?.[0]?.path || "",
-        vehicleRight: files.vehicleRight?.[0]?.path || "",
-
-        tyreFrontLeft: files.tyreFrontLeft?.[0]?.path || "",
-        tyreFrontRight: files.tyreFrontRight?.[0]?.path || "",
-        tyreRearLeft: files.tyreRearLeft?.[0]?.path || "",
-        tyreRearRight: files.tyreRearRight?.[0]?.path || "",
-        spareTyre: files.spareTyre?.[0]?.path || "",
-        toolkit: files.toolkit?.[0]?.path || "",
-      },
+         VEHICLE RETURN IMAGES
+      ====================== */
+      images: returnImages,
 
       /* ======================
-     DAMAGE IMAGES
-  ====================== */
-
+         DAMAGE IMAGES
+      ====================== */
       damageImages,
 
       /* ======================
-     ADDITIONAL IMAGES (optional)
-  ====================== */
-
+         ADDITIONAL IMAGES (optional)
+      ====================== */
       additionalImages,
 
       /* ======================
-     DAMAGE DETAILS
-  ====================== */
-
+         DAMAGE DETAILS
+      ====================== */
       damageCostDetails: isDamaged
         ? {
             repairEstimate: estimate,
@@ -465,9 +568,8 @@ export const receiveVehicle = async (req, res) => {
         : undefined,
 
       /* ======================
-     SETTLEMENT DETAILS
-  ====================== */
-
+         SETTLEMENT DETAILS
+      ====================== */
       settlementDetails: {
         pendingAmount,
 
@@ -484,7 +586,11 @@ export const receiveVehicle = async (req, res) => {
         amountCollected: collected,
 
         paymentMode: normalizedPaymentMode,
+
         paymentBreakdown: parsedPaymentBreakdown,
+
+        // Now saved on the return too, not only in PaymentHistory.
+        upiLast4: isUpiPayment ? normalizedUpiLast4 : [],
 
         finalBalance,
 
@@ -499,19 +605,12 @@ export const receiveVehicle = async (req, res) => {
     });
 
     /* ==========================================================
-   PAYMENT HISTORY
-   Create a separate payment record for money collected
-   during vehicle return.
-========================================================== */
+       PAYMENT HISTORY
+       Separate payment record for money collected during return.
+    ========================================================== */
 
-    const receivedAmount = Number(amountCollected) || 0;
-
-    if (receivedAmount > 0) {
+    if (collected > 0) {
       try {
-        // --------------------------------------------------------
-        // NORMALIZE PAYMENT METHOD
-        // --------------------------------------------------------
-
         const finalPaymentMethod = (() => {
           const mode = String(normalizedPaymentMode || "Cash").toLowerCase();
 
@@ -525,10 +624,6 @@ export const receiveVehicle = async (req, res) => {
           return paymentMethodMap[mode] || "cash";
         })();
 
-        // --------------------------------------------------------
-        // CREATE PAYMENT HISTORY
-        // --------------------------------------------------------
-
         const paymentHistory = await PaymentHistory.create({
           company: companyId,
 
@@ -536,18 +631,10 @@ export const receiveVehicle = async (req, res) => {
 
           handoverId: handover._id,
 
-          // ------------------------------------------------------
-          // CUSTOMER
-          // ------------------------------------------------------
-
           customer: {
             fullName: handover.customer?.fullName || "",
             mobileNumber: handover.customer?.mobileNumber || "",
           },
-
-          // ------------------------------------------------------
-          // VEHICLE
-          // ------------------------------------------------------
 
           vehicle: {
             vehicleId: vehicle._id,
@@ -557,12 +644,7 @@ export const receiveVehicle = async (req, res) => {
             vehicleNumber: vehicle.vehicleNumber || "",
           },
 
-          // ------------------------------------------------------
-          // RENTAL / BOOKING PERIOD
-          // IMPORTANT:
           // Store the actual rental period with every payment.
-          // ------------------------------------------------------
-
           booking: {
             fromDate: handover.trip?.pickupDateTime || null,
 
@@ -571,27 +653,11 @@ export const receiveVehicle = async (req, res) => {
             bookingAmount: Number(handover.payment?.totalAmount) || 0,
           },
 
-          // ------------------------------------------------------
-          // PAYMENT AMOUNT
-          // ------------------------------------------------------
-
-          amount: receivedAmount,
-
-          // ------------------------------------------------------
-          // PAYMENT METHOD
-          // ------------------------------------------------------
+          amount: collected,
 
           paymentMethod: finalPaymentMethod,
 
-          // ------------------------------------------------------
-          // PHONEPE UPI REFERENCES
-          // ------------------------------------------------------
-
           upiLast4: isUpiPayment ? normalizedUpiLast4 : [],
-
-          // ------------------------------------------------------
-          // PAYMENT BREAKDOWN
-          // ------------------------------------------------------
 
           paymentBreakdown: {
             cash: Number(parsedPaymentBreakdown?.cash) || 0,
@@ -601,29 +667,13 @@ export const receiveVehicle = async (req, res) => {
             razorpay: Number(parsedPaymentBreakdown?.razorpay) || 0,
           },
 
-          // ------------------------------------------------------
-          // PAYMENT TYPE
-          // ------------------------------------------------------
-
           type: "receive",
-
-          // ------------------------------------------------------
-          // NOTE
-          // ------------------------------------------------------
 
           note:
             balanceReason?.trim() || "Payment received during vehicle return",
 
-          // ------------------------------------------------------
-          // CREATED BY
-          // ------------------------------------------------------
-
           createdBy: req.user?._id || null,
         });
-
-        // --------------------------------------------------------
-        // CONNECT PAYMENT HISTORY TO VEHICLE
-        // --------------------------------------------------------
 
         if (vehicle?._id && paymentHistory?._id) {
           await Vehicle.findByIdAndUpdate(vehicle._id, {
@@ -638,11 +688,6 @@ export const receiveVehicle = async (req, res) => {
           paymentHistory._id.toString(),
         );
       } catch (paymentHistoryError) {
-        // --------------------------------------------------------
-        // IMPORTANT:
-        // Don't silently hide the actual error.
-        // --------------------------------------------------------
-
         console.error(
           "RECEIVE PAYMENT HISTORY CREATION ERROR:",
           paymentHistoryError,
@@ -660,11 +705,9 @@ export const receiveVehicle = async (req, res) => {
     ========================== */
 
     if (maintenanceRequired) {
-      const estimatedDays = Number(maintenanceDays) || 0;
-
       const completionDate = new Date();
 
-      completionDate.setDate(completionDate.getDate() + estimatedDays);
+      completionDate.setDate(completionDate.getDate() + maintenanceDaysNum);
 
       vehicle.status = "service";
 
@@ -673,7 +716,7 @@ export const receiveVehicle = async (req, res) => {
 
         reason: maintenanceReason || "",
 
-        estimatedDays,
+        estimatedDays: maintenanceDaysNum,
 
         estimatedCompletionDate: completionDate,
 
@@ -723,35 +766,21 @@ export const receiveVehicle = async (req, res) => {
       handover.payment.paymentStatus = "pending";
     }
 
-    // ── Fold the return-time settlement into payment.billSummary too,
-    // since that's the single object every screen (handover details,
-    // vehicle-return details, dashboards) renders the bill from. Without
-    // this, billSummary would keep showing the pre-return numbers even
-    // though fines/damage were added and money was collected just now.
+    // Fold the return-time settlement into payment.billSummary, since
+    // that's the single object every screen renders the bill from.
     const existingBill = handover.payment.billSummary || {};
 
-    // Fines/damage collected during return count as extra charges on
-    // top of whatever was already billed at handover time.
+    // Fines/damage added during return count as extra charges on top of
+    // whatever was already billed at handover time.
     const returnTimeExtras = lateFine + kmFine + fuelFine + estimate;
-
-    const updatedExtraCharges =
-      Number(existingBill.extraCharges || 0) + returnTimeExtras;
-
-    const updatedTotalAmount =
-      Number(existingBill.totalAmount || 0) + returnTimeExtras;
-
-    const updatedTotalCollected =
-      Number(existingBill.totalCollected || 0) + collected;
-
-    const updatedAmountReceivedNow =
-      Number(existingBill.amountReceivedNow || 0) + collected;
 
     handover.payment.billSummary = {
       ...existingBill,
-      extraCharges: updatedExtraCharges,
-      totalAmount: updatedTotalAmount,
-      amountReceivedNow: updatedAmountReceivedNow,
-      totalCollected: updatedTotalCollected,
+      extraCharges: Number(existingBill.extraCharges || 0) + returnTimeExtras,
+      totalAmount: Number(existingBill.totalAmount || 0) + returnTimeExtras,
+      amountReceivedNow:
+        Number(existingBill.amountReceivedNow || 0) + collected,
+      totalCollected: Number(existingBill.totalCollected || 0) + collected,
       balanceAmount: finalBalance,
     };
 
@@ -760,8 +789,8 @@ export const receiveVehicle = async (req, res) => {
     await handover.save();
 
     /* ==========================
-   UPDATE BOOKING
-========================== */
+       UPDATE BOOKING
+    ========================== */
 
     if (handover.bookingId) {
       const booking = await Booking.findByIdAndUpdate(
@@ -783,33 +812,41 @@ export const receiveVehicle = async (req, res) => {
       } else {
         // --- Referral Reward Logic ---
         try {
-          const Referral = (await import("../models/referral.model.js")).default;
-          const Customer = (await import("../models/customer.model.js")).default;
-          const SawariCashTransaction = (await import("../models/sawaricash_transaction.model.js")).default;
-          
-          const referral = await Referral.findOne({ 
-            referredMobile: handover.customer.mobileNumber, 
-            status: { $ne: 'rewarded' } 
+          const Referral = (await import("../models/referral.model.js"))
+            .default;
+          const Customer = (await import("../models/customer.model.js"))
+            .default;
+          const SawariCashTransaction = (
+            await import("../models/sawaricash_transaction.model.js")
+          ).default;
+
+          const referral = await Referral.findOne({
+            referredMobile: handover.customer.mobileNumber,
+            status: { $ne: "rewarded" },
           });
-          
+
           if (referral) {
-            const commission = Math.round((handover.payment.billSummary.totalAmount || 0) * 0.10);
+            const commission = Math.round(
+              (handover.payment.billSummary.totalAmount || 0) * 0.1,
+            );
             if (commission > 0) {
               // 1. Credit Referrer's Wallet
-              await Customer.findByIdAndUpdate(referral.referrerId, { $inc: { walletBalance: commission } });
-              
+              await Customer.findByIdAndUpdate(referral.referrerId, {
+                $inc: { walletBalance: commission },
+              });
+
               // 2. Log Transaction
               await SawariCashTransaction.create({
                 customerId: referral.referrerId,
                 amount: commission,
-                transactionType: 'credit',
-                reason: 'referral_commission',
-                status: 'completed',
-                description: `10% commission from referred customer's successful ride`
+                transactionType: "credit",
+                reason: "referral_commission",
+                status: "completed",
+                description: `10% commission from referred customer's successful ride`,
               });
-              
+
               // 3. Mark Referral as Rewarded
-              referral.status = 'rewarded';
+              referral.status = "rewarded";
               referral.commissionAmount = commission;
               referral.rewardBookingId = booking._id;
               referral.rewardedAt = new Date();
@@ -819,7 +856,6 @@ export const receiveVehicle = async (req, res) => {
         } catch (refError) {
           console.error("Referral Commission Error:", refError);
         }
-        // -----------------------------
       }
     }
 
@@ -829,7 +865,10 @@ export const receiveVehicle = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Vehicle received successfully",
+      message:
+        vehicleCategory === "bike"
+          ? "Bike received successfully"
+          : "Vehicle received successfully",
       data: vehicleReturn,
     });
   } catch (error) {
@@ -841,7 +880,6 @@ export const receiveVehicle = async (req, res) => {
     });
   }
 };
-
 export const getServiceVehicles = async (req, res) => {
   try {
     const companyId = req.user.company || req.user._id;

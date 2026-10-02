@@ -72,6 +72,40 @@ const damageCostDetailsSchema = new mongoose.Schema(
 );
 
 /* ==========================
+   MAINTENANCE DETAILS
+   FIX: the controller has always written `maintenanceDetails`, but the
+   field was missing from this schema, so Mongoose (strict mode) silently
+   dropped it on every return.
+========================== */
+
+const maintenanceDetailsSchema = new mongoose.Schema(
+  {
+    required: {
+      type: Boolean,
+      default: false,
+    },
+
+    reason: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    estimatedDays: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    estimatedCompletionDate: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false },
+);
+
+/* ==========================
    PAYMENT SETTLEMENT DETAILS
 ========================== */
 
@@ -150,11 +184,21 @@ const settlementDetailsSchema = new mongoose.Schema(
       enum: ["Cash", "PhonePe", "Razorpay", "Mixed"],
       default: "Cash",
     },
+
+    /*
+      FIX: the app sends a LIST of UPI references, but this was a single
+      String with a 4-digit regex, so it could never hold them (and the
+      controller never saved it). Now an array; empty strings are
+      tolerated so old documents that stored "" still validate on re-save.
+    */
     upiLast4: {
-      type: String,
-      default: "",
-      trim: true,
-      match: [/^\d{4}$/, "UPI last 4 digits must contain exactly 4 digits"],
+      type: [String],
+      default: [],
+      validate: {
+        validator: (arr) =>
+          (arr || []).every((v) => !v || /^\d{4}$/.test(String(v))),
+        message: "Each UPI reference must be exactly 4 digits",
+      },
     },
 
     paymentBreakdown: {
@@ -243,6 +287,18 @@ const vehicleReturnSchema = new mongoose.Schema(
       index: true,
     },
 
+    /*
+      NEW: car or bike — decided on the server from the Vehicle document
+      at return time. Drives which checklist/photos the return contains.
+      Old documents without it are treated as "car".
+    */
+    vehicleCategory: {
+      type: String,
+      enum: ["car", "bike"],
+      default: "car",
+      index: true,
+    },
+
     customerName: {
       type: String,
       default: "",
@@ -282,54 +338,24 @@ const vehicleReturnSchema = new mongoose.Schema(
     ====================== */
 
     images: {
-      vehicleFront: {
-        type: String,
-        default: "",
-      },
+      // Common to car & bike
+      vehicleFront: { type: String, default: "" },
+      vehicleRear: { type: String, default: "" },
+      vehicleLeft: { type: String, default: "" },
+      vehicleRight: { type: String, default: "" },
+      toolkit: { type: String, default: "" },
 
-      vehicleRear: {
-        type: String,
-        default: "",
-      },
+      // Car only
+      tyreFrontLeft: { type: String, default: "" },
+      tyreFrontRight: { type: String, default: "" },
+      tyreRearLeft: { type: String, default: "" },
+      tyreRearRight: { type: String, default: "" },
+      spareTyre: { type: String, default: "" },
 
-      vehicleLeft: {
-        type: String,
-        default: "",
-      },
-
-      vehicleRight: {
-        type: String,
-        default: "",
-      },
-      tyreFrontLeft: {
-        type: String,
-        default: "",
-      },
-
-      tyreFrontRight: {
-        type: String,
-        default: "",
-      },
-
-      tyreRearLeft: {
-        type: String,
-        default: "",
-      },
-
-      tyreRearRight: {
-        type: String,
-        default: "",
-      },
-
-      spareTyre: {
-        type: String,
-        default: "",
-      },
-
-      toolkit: {
-        type: String,
-        default: "",
-      },
+      // Bike only (NEW)
+      tyreFront: { type: String, default: "" },
+      tyreRear: { type: String, default: "" },
+      helmet: { type: String, default: "" },
     },
 
     /* ======================
@@ -351,6 +377,15 @@ const vehicleReturnSchema = new mongoose.Schema(
 
     damageCostDetails: {
       type: damageCostDetailsSchema,
+      default: () => ({}),
+    },
+
+    /* ======================
+       MAINTENANCE DETAILS
+    ====================== */
+
+    maintenanceDetails: {
+      type: maintenanceDetailsSchema,
       default: () => ({}),
     },
 
