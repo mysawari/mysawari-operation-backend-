@@ -3246,25 +3246,25 @@ const calculateTotalDaysFromDates = (fromDate, toDate) => {
   return diffDays < 1 ? 1 : diffDays;
 };
 
-const ALLOWED_PAYMENT_METHODS = ["cash", "phonepe", "razorpay", "mixed"];
 
+const ALLOWED_PAYMENT_METHODS = ["cash", "phonepe", "razorpay", "mixed"];
 
 export const updateBooking = async (req, res, next) => {
   try {
     const { id } = req.params;
- 
+
     const booking = await Booking.findOne({
       _id: id,
       isDeleted: false,
     });
- 
+
     if (!booking) {
       return res.status(404).json({
         success: false,
         message: "Booking not found.",
       });
     }
- 
+
     // Cancelled bookings are read-only on the app — enforce it here too.
     if (booking.status === "cancelled") {
       return res.status(400).json({
@@ -3272,7 +3272,7 @@ export const updateBooking = async (req, res, next) => {
         message: "Cancelled bookings cannot be updated.",
       });
     }
- 
+
     const {
       customerName,
       mobileNumber,
@@ -3287,21 +3287,21 @@ export const updateBooking = async (req, res, next) => {
       pickupTime,
       dropTime,
       residents,
- 
+
       vehicleId,
- 
+
       pickupDropRequired = false,
       serviceType = "pickup_drop",
- 
+
       pickup = {},
       drop = {},
       pickupDropNotes = "",
- 
+
       // All pricing fields arrive nested inside `payment: {...}`
       // (see BookingDetailsScreen's handleUpdateBooking payload).
       payment: paymentInput = {},
     } = req.body;
- 
+
     const {
       discountAmount: discountAmountInput,
       securityDeposit: securityDepositInput,
@@ -3310,11 +3310,11 @@ export const updateBooking = async (req, res, next) => {
       paymentMethod: paymentMethodInput,
       upiLast4: upiLast4Input,
     } = paymentInput;
- 
+
     // =========================
     // PAYMENT METHOD + UPI
     // =========================
- 
+
     // If the client didn't send a method, keep whatever is already saved
     // instead of silently resetting it to "cash".
     const finalPaymentMethod = (
@@ -3325,20 +3325,20 @@ export const updateBooking = async (req, res, next) => {
       .toString()
       .trim()
       .toLowerCase();
- 
+
     if (!ALLOWED_PAYMENT_METHODS.includes(finalPaymentMethod)) {
       return res.status(400).json({
         success: false,
         message: `Invalid payment method. Allowed: ${ALLOWED_PAYMENT_METHODS.join(", ")}.`,
       });
     }
- 
+
     // UPI last 4 is only meaningful for PhonePe. Optional, but if given it
     // must be exactly 4 digits.
     let finalUpiLast4 = "";
     if (finalPaymentMethod === "phonepe") {
       finalUpiLast4 = String(upiLast4Input ?? "").replace(/\D/g, "");
- 
+
       if (finalUpiLast4 && finalUpiLast4.length !== 4) {
         return res.status(400).json({
           success: false,
@@ -3346,20 +3346,20 @@ export const updateBooking = async (req, res, next) => {
         });
       }
     }
- 
+
     // =========================
     // VEHICLE
     // =========================
- 
+
     const vehicle = await Vehicle.findById(vehicleId);
- 
+
     if (!vehicle || vehicle.isDeleted) {
       return res.status(404).json({
         success: false,
         message: "Vehicle not found.",
       });
     }
- 
+
     // Snapshot the vehicle currently on the booking BEFORE we overwrite it
     // below, so we can log a history entry if it's actually being changed.
     const previousVehicle = {
@@ -3367,11 +3367,11 @@ export const updateBooking = async (req, res, next) => {
       vehicleName: booking.vehicleName,
       vehicleNumber: booking.vehicleNumber,
     };
- 
+
     const isVehicleChanged =
       previousVehicle.vehicleId &&
       previousVehicle.vehicleId.toString() !== vehicle._id.toString();
- 
+
     if (isVehicleChanged) {
       booking.vehicleHistory = booking.vehicleHistory || [];
       booking.vehicleHistory.push({
@@ -3391,105 +3391,105 @@ export const updateBooking = async (req, res, next) => {
         }) to ${vehicle.vehicleName} (${vehicle.vehicleNumber})`,
       });
     }
- 
+
     // =========================
     // DATES
     // =========================
- 
+
     const finalFromDate = new Date(fromDate);
     const finalToDate = new Date(toDate);
- 
+
     if (isNaN(finalFromDate.getTime()) || isNaN(finalToDate.getTime())) {
       return res.status(400).json({
         success: false,
         message: "Invalid pickup or drop date.",
       });
     }
- 
+
     if (finalToDate.getTime() < finalFromDate.getTime()) {
       return res.status(400).json({
         success: false,
         message: "Drop date cannot be before pickup date.",
       });
     }
- 
+
     // =========================
     // TOTAL DAYS — recomputed server-side, client totalDays is ignored.
     // =========================
- 
+
     const finalTotalDays = calculateTotalDaysFromDates(
       finalFromDate,
       finalToDate,
     );
- 
+
     // =========================
     // PRICING (recomputed server-side — never trust client totals)
     // =========================
- 
+
     const vehicleRent = Number(vehicle.pricePerDay || 0) * finalTotalDays;
- 
+
     const pickupCharge =
       pickupDropRequired &&
       (serviceType === "pickup" || serviceType === "pickup_drop")
         ? Number(pickup.charge || 0)
         : 0;
- 
+
     const dropCharge =
       pickupDropRequired &&
       (serviceType === "drop" || serviceType === "pickup_drop")
         ? Number(drop.charge || 0)
         : 0;
- 
+
     const fastagAmount = Number(fastagAmountInput || 0);
- 
+
     const discountAmount = Number(discountAmountInput || 0);
     const securityDeposit = Number(securityDepositInput || 0);
     const bookingAmountPaid = Number(bookingAmountPaidInput || 0);
- 
+
     // Vehicle + Pickup + Drop + FASTag. Security deposit is tracked
     // separately (refundable, not part of the payable fare).
     const totalAmount = vehicleRent + pickupCharge + dropCharge + fastagAmount;
- 
+
     // =========================
     // UPDATE — CUSTOMER / TRIP FIELDS
     // =========================
- 
+
     booking.customerName = customerName?.trim() || "";
     booking.mobileNumber = mobileNumber?.trim() || "";
     booking.alternateMobileNumber = alternateMobileNumber?.trim() || "";
     booking.occupation = occupation?.trim() || "";
- 
+
     booking.destination = destination?.trim() || "";
- 
+
     booking.aadhaarNumber = aadhaarNumber?.trim() || "";
- 
+
     booking.drivingLicenseNumber =
       drivingLicenseNumber?.trim().toUpperCase() || "";
- 
+
     booking.tripType = tripType || "local";
- 
+
     booking.fromDate = finalFromDate;
     booking.toDate = finalToDate;
- 
+
     booking.pickupTime = pickupTime || "09:00 AM";
     booking.dropTime = dropTime || "06:00 PM";
- 
+
     booking.totalDays = finalTotalDays;
     booking.residents = Number(residents) || 1;
- 
+
     booking.vehicleId = vehicle._id;
     booking.vehicleName = vehicle.vehicleName;
     booking.vehicleNumber = vehicle.vehicleNumber;
     booking.vehicleColor = vehicle.color;
- 
+
     // =========================
     // UPDATE — PAYMENT
     // balanceAmount / totalCollected / paymentStatus are recomputed by the
     // schema's pre-save hook, so they're not set here.
     // =========================
- 
+
     booking.payment = booking.payment || {};
- 
+
     booking.payment.vehicleRent = vehicleRent;
     booking.payment.pickupCharge = pickupCharge;
     booking.payment.dropCharge = dropCharge;
@@ -3498,10 +3498,10 @@ export const updateBooking = async (req, res, next) => {
     booking.payment.discountAmount = discountAmount;
     booking.payment.securityDeposit = securityDeposit;
     booking.payment.bookingAmountPaid = bookingAmountPaid;
- 
+
     booking.payment.paymentMethod = finalPaymentMethod;
     booking.payment.upiLast4 = finalUpiLast4;
- 
+
     // Keep the breakdown in sync with the chosen method: the whole advance
     // goes to that bucket. For "mixed", keep whatever split already exists
     // (the app doesn't edit a split yet).
@@ -3512,38 +3512,38 @@ export const updateBooking = async (req, res, next) => {
         razorpay: finalPaymentMethod === "razorpay" ? bookingAmountPaid : 0,
       };
     }
- 
+
     // =========================
     // UPDATE — PICKUP / DROP SERVICE
     // =========================
- 
+
     booking.pickupDropRequired = pickupDropRequired;
     booking.serviceType = serviceType;
- 
+
     booking.pickup = {
       location: pickup.location?.trim() || "",
       landmark: pickup.landmark?.trim() || "",
       mapLink: pickup.mapLink?.trim() || "",
       charge: pickupCharge,
     };
- 
+
     booking.drop = {
       location: drop.location?.trim() || "",
       landmark: drop.landmark?.trim() || "",
       mapLink: drop.mapLink?.trim() || "",
       charge: dropCharge,
     };
- 
+
     booking.pickupDropNotes = pickupDropNotes?.trim() || "";
- 
+
     await booking.save();
- 
+
     await booking.populate({
       path: "vehicleId",
       select:
         "vehicleName vehicleNumber manufacturer model color pricePerDay images",
     });
- 
+
     return res.status(200).json({
       success: true,
       message: "Booking updated successfully.",
