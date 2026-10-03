@@ -4,6 +4,7 @@ import Vehicle from "../models/vehicle.model.js";
 import VehicleReturn from "../models/vehicleReturn.model.js";
 import Booking from "../models/booking.model.js";
 import PaymentHistory from "../models/paymentHistory.model.js";
+import { returnImageFolder } from "../middlewares/upload.middleware.js";
 
 
 const RETURN_IMAGE_FIELDS = {
