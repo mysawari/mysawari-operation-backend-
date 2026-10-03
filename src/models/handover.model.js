@@ -7,6 +7,14 @@ const extensionBillSchema = new mongoose.Schema(
       required: true,
     },
 
+    // NEW: "extension" = drop date moved later (fare goes UP)
+    //      "reduction" = drop date moved earlier (fare goes DOWN)
+    billType: {
+      type: String,
+      enum: ["extension", "reduction"],
+      default: "extension",
+    },
+
     previousDropDateTime: { type: Date, required: true },
     newDropDateTime: { type: Date, required: true },
 
@@ -16,7 +24,8 @@ const extensionBillSchema = new mongoose.Schema(
     // Positive = extended further, negative = shortened
     extraDays: { type: Number, required: true },
 
-    // The charge for this specific extension (its own bill line item)
+    // Always stored as a POSITIVE number.
+    // billType decides whether it was added to or deducted from totalFare.
     extensionAmount: {
       type: Number,
       default: 0,
@@ -26,6 +35,13 @@ const extensionBillSchema = new mongoose.Schema(
     // How much of "amountReceivedNow" was collected at the moment
     // this specific extension was made (for a per-bill receipt view)
     amountCollected: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    // NEW: refund handed back to the customer with this bill
+    amountRefunded: {
       type: Number,
       default: 0,
       min: 0,
@@ -194,7 +210,6 @@ const handoverSchema = new mongoose.Schema(
         default: false,
       },
 
-      // NEW
       toolkitAvailable: {
         type: Boolean,
         required: true,
@@ -354,7 +369,36 @@ const handoverSchema = new mongoose.Schema(
         min: 0,
       },
 
+      // NEW: cumulative money returned to the customer
+      refundedAmount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+
+      // NEW: how the refunds were paid out
+      refundBreakdown: {
+        cash: {
+          type: Number,
+          default: 0,
+          min: 0,
+        },
+        phonePe: {
+          type: Number,
+          default: 0,
+          min: 0,
+        },
+      },
+
       balanceAmount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+
+      // NEW: customer has paid more than totalAmount and
+      // this much is still owed back to them
+      refundDue: {
         type: Number,
         default: 0,
         min: 0,
@@ -442,12 +486,24 @@ const handoverSchema = new mongoose.Schema(
           default: 0,
         },
 
+        // NEW
+        refundedAmount: {
+          type: Number,
+          default: 0,
+        },
+
         totalCollected: {
           type: Number,
           default: 0,
         },
 
         balanceAmount: {
+          type: Number,
+          default: 0,
+        },
+
+        // NEW
+        refundDue: {
           type: Number,
           default: 0,
         },
@@ -613,9 +669,15 @@ handoverSchema.pre("save", function () {
 
     const receivedNow = Number(this.payment.amountReceivedNow) || 0;
 
-    const totalPaid = bookingPaid + receivedNow;
+    // CHANGED: refunds reduce what the company actually holds
+    const refunded = Number(this.payment.refundedAmount) || 0;
+
+    const totalPaid = bookingPaid + receivedNow - refunded;
 
     this.payment.balanceAmount = Math.max(0, totalAmount - totalPaid);
+
+    // NEW: overpayment that still has to be returned
+    this.payment.refundDue = Math.max(0, totalPaid - totalAmount);
 
     if (this.payment.balanceAmount === 0) {
       this.payment.paymentStatus = "paid";
