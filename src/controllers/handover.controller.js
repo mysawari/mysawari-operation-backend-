@@ -1944,6 +1944,86 @@ export const getSingleHandover = async (req, res) => {
   }
 };
 
+const SEARCH_LOOKUP_LIMIT = 500;
+ 
+// "as01ab" -> /a[\s-]*s[\s-]*0[\s-]*1.../ so plates match with or
+// without spaces / hyphens.
+const loosePlatePattern = (value) =>
+  value
+    .replace(/[\s-]/g, "")
+    .split("")
+    .map(escapeRegex)
+    .join("[\\s-]*");
+ 
+/**
+ * Builds a Mongo filter for Handover documents matching the search term.
+ * Returns null when there is no search.
+ */
+const buildHandoverSearchFilter = async (searchTerm) => {
+  if (!searchTerm) return null;
+ 
+  const textRx = new RegExp(escapeRegex(searchTerm), "i");
+  const plateSource = loosePlatePattern(searchTerm);
+  const plateRx = plateSource ? new RegExp(plateSource, "i") : textRx;
+ 
+  // "+91 98765-43210" -> "919876543210" so formatted numbers still match
+  const digits = searchTerm.replace(/\D/g, "");
+  const phoneRx =
+    digits.length >= 3 && digits !== searchTerm
+      ? new RegExp(escapeRegex(digits))
+      : null;
+ 
+  // Vehicle + booking lookups run in parallel and return only _ids.
+  const [vehicles, bookings] = await Promise.all([
+    Vehicle.find({
+      $or: [{ vehicleName: textRx }, { vehicleNumber: plateRx }],
+    })
+      .select("_id")
+      .limit(SEARCH_LOOKUP_LIMIT)
+      .lean(),
+    // Drop location: only for 3+ characters, to keep short searches fast
+    searchTerm.length >= 3
+      ? Booking.find({ "drop.location": textRx })
+          .select("_id")
+          .sort({ _id: -1 })
+          .limit(SEARCH_LOOKUP_LIMIT)
+          .lean()
+      : Promise.resolve([]),
+  ]);
+ 
+  const or = [
+    { "customer.fullName": textRx },
+    { "customer.mobileNumber": textRx },
+    { "vehicle.vehicleName": textRx },
+    { "vehicle.vehicleNumber": plateRx },
+  ];
+ 
+  if (phoneRx) or.push({ "customer.mobileNumber": phoneRx });
+ 
+  if (vehicles.length) {
+    or.push({ "vehicle.vehicleId": { $in: vehicles.map((v) => v._id) } });
+  }
+ 
+  if (bookings.length) {
+    or.push({ bookingId: { $in: bookings.map((b) => b._id) } });
+  }
+ 
+  // Booking ID shown on the card = last 8 chars of the handover _id
+  if (/^[a-f0-9]{4,8}$/i.test(searchTerm)) {
+    or.push({
+      $expr: {
+        $regexMatch: {
+          input: { $substrCP: [{ $toString: "$_id" }, 16, 8] },
+          regex: escapeRegex(searchTerm),
+          options: "i",
+        },
+      },
+    });
+  }
+ 
+  return { $or: or };
+};
+ 
 export const getReceiveCarList = async (req, res) => {
   try {
     const {
@@ -1954,19 +2034,20 @@ export const getReceiveCarList = async (req, res) => {
       completedDays = 90,
       includeCounts = "true",
     } = req.query;
-
+ 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 7, 1), 50);
     const searchTerm = String(search || "")
       .trim()
-      .toLowerCase();
-
+      .toLowerCase()
+      .slice(0, 60);
+ 
     const baseMatch = {
       isDeleted: false,
       "vehicle.vehicleId": { $exists: true },
       handoverStatus: { $ne: "cancelled" },
     };
-
+ 
     // ---- IST day boundaries, computed once per request ----
     const now = new Date();
     const todayStr = now.toLocaleDateString("en-CA", { timeZone: IST_TZ });
@@ -1975,13 +2056,13 @@ export const getReceiveCarList = async (req, res) => {
     const tomorrowStr = tomorrowD.toLocaleDateString("en-CA", {
       timeZone: IST_TZ,
     });
-
+ 
     const today = istDayBoundsUTC(todayStr);
     const tomorrow = istDayBoundsUTC(tomorrowStr);
-
+ 
     const completedSince = new Date();
     completedSince.setDate(completedSince.getDate() - Number(completedDays));
-
+ 
     let dateFilter = {};
     if (tab === "today") {
       dateFilter = {
@@ -1994,7 +2075,7 @@ export const getReceiveCarList = async (req, res) => {
     } else if (tab === "overdue") {
       dateFilter = { "trip.dropDateTime": { $lt: today.startUTC } };
     }
-
+ 
     const wantCounts = String(includeCounts) !== "false";
     const countsPromise = wantCounts
       ? Promise.all([
@@ -2031,84 +2112,87 @@ export const getReceiveCarList = async (req, res) => {
           }),
         )
       : Promise.resolve(null);
-
+ 
+    // Built once, used by both branches (runs while counts are computing)
+    const searchFilter = await buildHandoverSearchFilter(searchTerm);
+ 
     let data = [];
     let total = 0;
     let hasMore = false;
-
+ 
     if (tab === "completed") {
-      // Unchanged: this path was already lean — it paginates on the small
-      // VehicleReturn collection first and only ever populates the Handover
-      // docs for that one page.
       const returnMatch = {
         returnStatus: "completed",
         receivingTime: { $gte: completedSince },
       };
-
-      total = await VehicleReturn.countDocuments(returnMatch);
-
-      const returnsPage = await VehicleReturn.find(returnMatch)
-        .select(
-          "handover receivedBy receivingTime scheduledReturnTime timeStatus delayText settlementDetails",
-        )
-        .populate("receivedBy", "fullName role")
-        .sort({ receivingTime: -1 })
-        .skip((pageNum - 1) * limitNum)
-        .limit(limitNum)
-        .lean();
-
+ 
+      // NEW: Completed tab now respects search too
+      if (searchFilter) {
+        const matched = await Handover.find({ ...baseMatch, ...searchFilter })
+          .select("_id")
+          .lean();
+        returnMatch.handover = { $in: matched.map((h) => h._id) };
+      }
+ 
+      const [count, returnsPage] = await Promise.all([
+        VehicleReturn.countDocuments(returnMatch),
+        VehicleReturn.find(returnMatch)
+          .select(
+            "handover receivedBy receivingTime scheduledReturnTime timeStatus delayText settlementDetails",
+          )
+          .populate("receivedBy", "fullName role")
+          .sort({ receivingTime: -1 })
+          .skip((pageNum - 1) * limitNum)
+          .limit(limitNum)
+          .lean(),
+      ]);
+      total = count;
+ 
       const completedMap = new Map(
         returnsPage.map((r) => [String(r.handover), r]),
       );
       const ids = returnsPage.map((r) => r.handover);
-
-      const handoverDocs = await Handover.find({
-        ...baseMatch,
-        _id: { $in: ids },
-      })
-        .select(
-          "vehicle trip customer createdAt bookingId assignedDriver createdBy payment",
-        )
-        .populate({
-          path: "vehicle.vehicleId",
-          select: "vehicleName vehicleNumber images",
-        })
-        .populate("createdBy", "fullName role")
-        .populate("assignedDriver", "fullName mobileNumber profileImage role")
-        .populate({ path: "bookingId", select: "drop" })
-        .lean();
-
-      // Preserve VehicleReturn's receivingTime-desc order, since the Handover
-      // $in query above does not guarantee it.
+ 
+      const handoverDocs = ids.length
+        ? await Handover.find({ ...baseMatch, _id: { $in: ids } })
+            .select(
+              "vehicle trip customer createdAt bookingId assignedDriver createdBy payment",
+            )
+            .populate({
+              path: "vehicle.vehicleId",
+              select: "vehicleName vehicleNumber images",
+            })
+            .populate("createdBy", "fullName role")
+            .populate(
+              "assignedDriver",
+              "fullName mobileNumber profileImage role",
+            )
+            .populate({ path: "bookingId", select: "drop" })
+            .lean()
+        : [];
+ 
+      // Preserve VehicleReturn's receivingTime-desc order
       const order = new Map(ids.map((id, i) => [String(id), i]));
       handoverDocs.sort(
         (a, b) => order.get(String(a._id)) - order.get(String(b._id)),
       );
-
+ 
       hasMore = (pageNum - 1) * limitNum + returnsPage.length < total;
       data = buildResponseRows(handoverDocs, completedMap);
     } else {
       // ==========================================================
-      // STAGE 1 — cheap pass over the tab's date window.
-      //
-      // Previously this fetched EVERY candidate with full population
-      // (vehicle images, assignedDriver, createdBy, bookingId) and only
-      // used ~7 of them after slicing in JS — the populate cost was being
-      // paid for rows that were immediately thrown away. Here we only
-      // populate the two refs actually needed to filter/search/sort
-      // correctly (vehicle name/number, drop location), and skip images /
-      // driver / creator entirely at this stage.
+      // STAGE 1 — ids only. Tab window + search are filtered by MongoDB,
+      // no populate, no JS filtering.
       // ==========================================================
-      const candidates = await Handover.find({ ...baseMatch, ...dateFilter })
-        .select("vehicle trip customer createdAt bookingId")
-        .populate({
-          path: "vehicle.vehicleId",
-          select: "vehicleName vehicleNumber",
-        })
-        .populate({ path: "bookingId", select: "drop" })
+      const candidates = await Handover.find({
+        ...baseMatch,
+        ...dateFilter,
+        ...(searchFilter || {}),
+      })
+        .select("_id")
         .sort({ "trip.dropDateTime": 1 })
         .lean();
-
+ 
       const candidateIds = candidates.map((h) => h._id);
       const returns = candidateIds.length
         ? await VehicleReturn.find({
@@ -2119,44 +2203,18 @@ export const getReceiveCarList = async (req, res) => {
             .lean()
         : [];
       const completedIdSet = new Set(returns.map((r) => String(r.handover)));
-
-      let notCompleted = candidates.filter(
-        (h) => !completedIdSet.has(String(h._id)),
+ 
+      const notCompletedIds = candidateIds.filter(
+        (id) => !completedIdSet.has(String(id)),
       );
-
-      // Search (within this already-small, tab-scoped set)
-      if (searchTerm) {
-        notCompleted = notCompleted.filter((h) => {
-          const vehicleName =
-            h.vehicle?.vehicleId?.vehicleName || h.vehicle?.vehicleName || "";
-          const vehicleNumber =
-            h.vehicle?.vehicleId?.vehicleNumber ||
-            h.vehicle?.vehicleNumber ||
-            "";
-          const customerName = h.customer?.fullName || "";
-          const bookingTag = String(h._id).slice(-8);
-          const dropLocation = h.bookingId?.drop?.location || "";
-          return [
-            vehicleName,
-            vehicleNumber,
-            customerName,
-            bookingTag,
-            dropLocation,
-          ]
-            .join(" ")
-            .toLowerCase()
-            .includes(searchTerm);
-        });
-      }
-
-      total = notCompleted.length;
+ 
+      total = notCompletedIds.length;
       const start = (pageNum - 1) * limitNum;
-      const pageSlice = notCompleted.slice(start, start + limitNum);
-      hasMore = start + pageSlice.length < total;
-      const pageIds = pageSlice.map((h) => h._id);
-
+      const pageIds = notCompletedIds.slice(start, start + limitNum);
+      hasMore = start + pageIds.length < total;
+ 
       // ==========================================================
-      // STAGE 2 — full populate, but ONLY for the ids on this page.
+      // STAGE 2 — full populate, ONLY for the ids on this page.
       // ==========================================================
       let handoverDocs = [];
       if (pageIds.length) {
@@ -2172,18 +2230,18 @@ export const getReceiveCarList = async (req, res) => {
           .populate("assignedDriver", "fullName mobileNumber profileImage role")
           .populate({ path: "bookingId", select: "drop" })
           .lean();
-
+ 
         const order = new Map(pageIds.map((id, i) => [String(id), i]));
         handoverDocs.sort(
           (a, b) => order.get(String(a._id)) - order.get(String(b._id)),
         );
       }
-
+ 
       data = buildResponseRows(handoverDocs, new Map());
     }
-
+ 
     const counts = await countsPromise;
-
+ 
     return res.status(200).json({
       success: true,
       tab,
