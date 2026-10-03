@@ -3246,22 +3246,33 @@ const calculateTotalDaysFromDates = (fromDate, toDate) => {
   return diffDays < 1 ? 1 : diffDays;
 };
 
+const ALLOWED_PAYMENT_METHODS = ["cash", "phonepe", "razorpay", "mixed"];
+
+
 export const updateBooking = async (req, res, next) => {
   try {
     const { id } = req.params;
-
+ 
     const booking = await Booking.findOne({
       _id: id,
       isDeleted: false,
     });
-
+ 
     if (!booking) {
       return res.status(404).json({
         success: false,
         message: "Booking not found.",
       });
     }
-
+ 
+    // Cancelled bookings are read-only on the app — enforce it here too.
+    if (booking.status === "cancelled") {
+      return res.status(400).json({
+        success: false,
+        message: "Cancelled bookings cannot be updated.",
+      });
+    }
+ 
     const {
       customerName,
       mobileNumber,
@@ -3276,46 +3287,79 @@ export const updateBooking = async (req, res, next) => {
       pickupTime,
       dropTime,
       residents,
-
+ 
       vehicleId,
-
+ 
       pickupDropRequired = false,
       serviceType = "pickup_drop",
-
+ 
       pickup = {},
       drop = {},
       pickupDropNotes = "",
-
-      // ── FIX: the frontend sends every pricing field nested inside
-      // `payment: {...}` (see BookingDetailsScreen's handleUpdateBooking
-      // payload). The old code destructured `bookingAmount`,
-      // `discountAmount`, `securityDeposit`, `fastagBalance` as flat
-      // top-level fields, which the client never sends at the top level —
-      // they were always undefined, so every price update silently used 0.
+ 
+      // All pricing fields arrive nested inside `payment: {...}`
+      // (see BookingDetailsScreen's handleUpdateBooking payload).
       payment: paymentInput = {},
     } = req.body;
-
+ 
     const {
       discountAmount: discountAmountInput,
       securityDeposit: securityDepositInput,
       bookingAmountPaid: bookingAmountPaidInput,
       fastagAmount: fastagAmountInput,
       paymentMethod: paymentMethodInput,
+      upiLast4: upiLast4Input,
     } = paymentInput;
-
+ 
+    // =========================
+    // PAYMENT METHOD + UPI
+    // =========================
+ 
+    // If the client didn't send a method, keep whatever is already saved
+    // instead of silently resetting it to "cash".
+    const finalPaymentMethod = (
+      paymentMethodInput ||
+      booking.payment?.paymentMethod ||
+      "cash"
+    )
+      .toString()
+      .trim()
+      .toLowerCase();
+ 
+    if (!ALLOWED_PAYMENT_METHODS.includes(finalPaymentMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid payment method. Allowed: ${ALLOWED_PAYMENT_METHODS.join(", ")}.`,
+      });
+    }
+ 
+    // UPI last 4 is only meaningful for PhonePe. Optional, but if given it
+    // must be exactly 4 digits.
+    let finalUpiLast4 = "";
+    if (finalPaymentMethod === "phonepe") {
+      finalUpiLast4 = String(upiLast4Input ?? "").replace(/\D/g, "");
+ 
+      if (finalUpiLast4 && finalUpiLast4.length !== 4) {
+        return res.status(400).json({
+          success: false,
+          message: "UPI last 4 digits must be exactly 4 numbers.",
+        });
+      }
+    }
+ 
     // =========================
     // VEHICLE
     // =========================
-
+ 
     const vehicle = await Vehicle.findById(vehicleId);
-
+ 
     if (!vehicle || vehicle.isDeleted) {
       return res.status(404).json({
         success: false,
         message: "Vehicle not found.",
       });
     }
-
+ 
     // Snapshot the vehicle currently on the booking BEFORE we overwrite it
     // below, so we can log a history entry if it's actually being changed.
     const previousVehicle = {
@@ -3323,11 +3367,11 @@ export const updateBooking = async (req, res, next) => {
       vehicleName: booking.vehicleName,
       vehicleNumber: booking.vehicleNumber,
     };
-
+ 
     const isVehicleChanged =
       previousVehicle.vehicleId &&
       previousVehicle.vehicleId.toString() !== vehicle._id.toString();
-
+ 
     if (isVehicleChanged) {
       booking.vehicleHistory = booking.vehicleHistory || [];
       booking.vehicleHistory.push({
@@ -3347,106 +3391,105 @@ export const updateBooking = async (req, res, next) => {
         }) to ${vehicle.vehicleName} (${vehicle.vehicleNumber})`,
       });
     }
-
+ 
     // =========================
     // DATES
     // =========================
-
+ 
     const finalFromDate = new Date(fromDate);
     const finalToDate = new Date(toDate);
-
+ 
     if (isNaN(finalFromDate.getTime()) || isNaN(finalToDate.getTime())) {
       return res.status(400).json({
         success: false,
         message: "Invalid pickup or drop date.",
       });
     }
-
+ 
+    if (finalToDate.getTime() < finalFromDate.getTime()) {
+      return res.status(400).json({
+        success: false,
+        message: "Drop date cannot be before pickup date.",
+      });
+    }
+ 
     // =========================
-    // TOTAL DAYS
-    // ── FIX: recompute from fromDate/toDate server-side instead of
-    // trusting req.body.totalDays. The client's totalDays is no longer
-    // read at all — this is now the single source of truth for both the
-    // frontend and backend, using the same calendar-day-difference logic,
-    // so pricing can never be manipulated or drift out of sync with the
-    // dates actually stored on the booking.
+    // TOTAL DAYS — recomputed server-side, client totalDays is ignored.
     // =========================
-
+ 
     const finalTotalDays = calculateTotalDaysFromDates(
       finalFromDate,
       finalToDate,
     );
-
+ 
     // =========================
     // PRICING (recomputed server-side — never trust client totals)
     // =========================
-
+ 
     const vehicleRent = Number(vehicle.pricePerDay || 0) * finalTotalDays;
-
+ 
     const pickupCharge =
       pickupDropRequired &&
       (serviceType === "pickup" || serviceType === "pickup_drop")
         ? Number(pickup.charge || 0)
         : 0;
-
+ 
     const dropCharge =
       pickupDropRequired &&
       (serviceType === "drop" || serviceType === "pickup_drop")
         ? Number(drop.charge || 0)
         : 0;
-
+ 
     const fastagAmount = Number(fastagAmountInput || 0);
-
+ 
     const discountAmount = Number(discountAmountInput || 0);
     const securityDeposit = Number(securityDepositInput || 0);
     const bookingAmountPaid = Number(bookingAmountPaidInput || 0);
-
-    // Vehicle + Pickup + Drop + FASTag — matches the schema comment on
-    // `payment.totalAmount` and the frontend's `rentalAmount` /
-    // `finalAmount` calculation. Security deposit is tracked separately
-    // (it's refundable, not part of the payable fare).
+ 
+    // Vehicle + Pickup + Drop + FASTag. Security deposit is tracked
+    // separately (refundable, not part of the payable fare).
     const totalAmount = vehicleRent + pickupCharge + dropCharge + fastagAmount;
-
+ 
     // =========================
     // UPDATE — CUSTOMER / TRIP FIELDS
     // =========================
-
+ 
     booking.customerName = customerName?.trim() || "";
     booking.mobileNumber = mobileNumber?.trim() || "";
     booking.alternateMobileNumber = alternateMobileNumber?.trim() || "";
     booking.occupation = occupation?.trim() || "";
-
+ 
     booking.destination = destination?.trim() || "";
-
+ 
     booking.aadhaarNumber = aadhaarNumber?.trim() || "";
-
+ 
     booking.drivingLicenseNumber =
       drivingLicenseNumber?.trim().toUpperCase() || "";
-
+ 
     booking.tripType = tripType || "local";
-
+ 
     booking.fromDate = finalFromDate;
     booking.toDate = finalToDate;
-
+ 
     booking.pickupTime = pickupTime || "09:00 AM";
     booking.dropTime = dropTime || "06:00 PM";
-
+ 
     booking.totalDays = finalTotalDays;
     booking.residents = Number(residents) || 1;
-
+ 
     booking.vehicleId = vehicle._id;
     booking.vehicleName = vehicle.vehicleName;
     booking.vehicleNumber = vehicle.vehicleNumber;
     booking.vehicleColor = vehicle.color;
-
+ 
     // =========================
-    // UPDATE — PAYMENT (only fields that actually exist on the schema;
-    // balanceAmount / totalCollected / paymentStatus are recomputed
-    // automatically by the pre-save hook, so we don't set them here)
+    // UPDATE — PAYMENT
+    // balanceAmount / totalCollected / paymentStatus are recomputed by the
+    // schema's pre-save hook, so they're not set here.
     // =========================
-
+ 
     booking.payment = booking.payment || {};
-
+ 
     booking.payment.vehicleRent = vehicleRent;
     booking.payment.pickupCharge = pickupCharge;
     booking.payment.dropCharge = dropCharge;
@@ -3455,44 +3498,52 @@ export const updateBooking = async (req, res, next) => {
     booking.payment.discountAmount = discountAmount;
     booking.payment.securityDeposit = securityDeposit;
     booking.payment.bookingAmountPaid = bookingAmountPaid;
-    booking.payment.paymentMethod = paymentMethodInput || "cash";
-
+ 
+    booking.payment.paymentMethod = finalPaymentMethod;
+    booking.payment.upiLast4 = finalUpiLast4;
+ 
+    // Keep the breakdown in sync with the chosen method: the whole advance
+    // goes to that bucket. For "mixed", keep whatever split already exists
+    // (the app doesn't edit a split yet).
+    if (finalPaymentMethod !== "mixed") {
+      booking.payment.paymentBreakdown = {
+        cash: finalPaymentMethod === "cash" ? bookingAmountPaid : 0,
+        phonePe: finalPaymentMethod === "phonepe" ? bookingAmountPaid : 0,
+        razorpay: finalPaymentMethod === "razorpay" ? bookingAmountPaid : 0,
+      };
+    }
+ 
     // =========================
     // UPDATE — PICKUP / DROP SERVICE
     // =========================
-
+ 
     booking.pickupDropRequired = pickupDropRequired;
     booking.serviceType = serviceType;
-
+ 
     booking.pickup = {
       location: pickup.location?.trim() || "",
       landmark: pickup.landmark?.trim() || "",
       mapLink: pickup.mapLink?.trim() || "",
       charge: pickupCharge,
     };
-
+ 
     booking.drop = {
       location: drop.location?.trim() || "",
       landmark: drop.landmark?.trim() || "",
       mapLink: drop.mapLink?.trim() || "",
       charge: dropCharge,
     };
-
+ 
     booking.pickupDropNotes = pickupDropNotes?.trim() || "";
-
-    // booking.payment.balanceAmount, totalCollected, and paymentStatus are
-    // derived automatically in the schema's pre-save hook from
-    // totalAmount / discountAmount / bookingAmountPaid / securityDeposit —
-    // no need to compute or assign them here.
-
+ 
     await booking.save();
-
+ 
     await booking.populate({
       path: "vehicleId",
       select:
         "vehicleName vehicleNumber manufacturer model color pricePerDay images",
     });
-
+ 
     return res.status(200).json({
       success: true,
       message: "Booking updated successfully.",
