@@ -15,14 +15,14 @@ const bookingSchema = new mongoose.Schema(
     company: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
       index: true,
     },
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
     },
 
     // =========================
