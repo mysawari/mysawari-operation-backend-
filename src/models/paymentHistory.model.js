@@ -39,8 +39,8 @@ const paymentHistorySchema = new mongoose.Schema(
   {
     company: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Company",
-      required: true,
+      ref: "User",
+      default: null,
       index: true,
     },
 
