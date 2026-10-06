@@ -15,14 +15,14 @@ const bookingSchema = new mongoose.Schema(
     company: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      default: null,
+      required: true,
       index: true,
     },
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      default: null,
+      required: true,
     },
 
     // =========================
@@ -237,17 +237,6 @@ const bookingSchema = new mongoose.Schema(
         type: String,
         enum: ["cash", "phonepe", "razorpay", "mixed"],
         default: "cash",
-      },
-
-      // Last 4 digits of the UPI transaction (PhonePe only)
-      upiLast4: {
-        type: String,
-        default: "",
-        trim: true,
-        validate: {
-          validator: (v) => v === "" || /^\d{4}$/.test(v),
-          message: "UPI last 4 digits must be exactly 4 numbers.",
-        },
       },
 
       paymentBreakdown: {
@@ -466,11 +455,6 @@ bookingSchema.pre("save", function () {
     } else {
       this.payment.paymentStatus = "pending";
     }
-
-    // UPI last 4 only applies to PhonePe
-    if (this.payment.paymentMethod !== "phonepe") {
-      this.payment.upiLast4 = "";
-    }
   }
 });
 
@@ -478,12 +462,39 @@ bookingSchema.pre("save", function () {
 // INDEXES
 // =========================
 
-bookingSchema.index({ company: 1, status: 1 });
-bookingSchema.index({ company: 1, lead: 1 });
-bookingSchema.index({ company: 1, vehicleId: 1 });
-bookingSchema.index({ company: 1, mobileNumber: 1 });
-bookingSchema.index({ company: 1, fromDate: 1 });
-bookingSchema.index({ company: 1, toDate: 1 });
-bookingSchema.index({ company: 1, createdAt: -1 });
+bookingSchema.index({
+  company: 1,
+  status: 1,
+});
+
+bookingSchema.index({
+  company: 1,
+  lead: 1,
+});
+
+bookingSchema.index({
+  company: 1,
+  vehicleId: 1,
+});
+
+bookingSchema.index({
+  company: 1,
+  mobileNumber: 1,
+});
+
+bookingSchema.index({
+  company: 1,
+  fromDate: 1,
+});
+
+bookingSchema.index({
+  company: 1,
+  toDate: 1,
+});
+
+bookingSchema.index({
+  company: 1,
+  createdAt: -1,
+});
 
 export default mongoose.model("Booking", bookingSchema);

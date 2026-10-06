@@ -3445,9 +3445,14 @@ export const updateBooking = async (req, res, next) => {
     const bookingAmountPaid = Number(bookingAmountPaidInput || 0);
  
     if (
-      [pickupCharge, dropCharge, fastagAmount, discountAmount, securityDeposit, bookingAmountPaid].some(
-        (n) => isNaN(n) || n < 0,
-      )
+      [
+        pickupCharge,
+        dropCharge,
+        fastagAmount,
+        discountAmount,
+        securityDeposit,
+        bookingAmountPaid,
+      ].some((n) => isNaN(n) || n < 0)
     ) {
       return res.status(400).json({
         success: false,
@@ -3506,7 +3511,6 @@ export const updateBooking = async (req, res, next) => {
     booking.payment.securityDeposit = securityDeposit;
     booking.payment.bookingAmountPaid = bookingAmountPaid;
     booking.payment.paymentMethod = paymentMethod;
-    booking.payment.upiLast4 = upiLast4;
  
     // Keep the per-method breakdown in sync with the advance paid.
     // For "mixed", the existing breakdown is left untouched.
@@ -3542,6 +3546,33 @@ export const updateBooking = async (req, res, next) => {
     booking.pickupDropNotes = pickupDropNotes?.trim() || "";
  
     await booking.save();
+ 
+    // =========================
+    // PAYMENT HISTORY — store payment method + UPI last 4
+    // =========================
+ 
+    const upiList = paymentMethod === "phonepe" && upiLast4 ? [upiLast4] : [];
+ 
+    const historyEntry = await PaymentHistory.findOne({
+      bookingId: booking._id,
+      type: "booking",
+    }).sort({ createdAt: -1 });
+ 
+    if (historyEntry) {
+      historyEntry.paymentMethod = paymentMethod;
+      historyEntry.upiLast4 = upiList;
+      await historyEntry.save();
+    } else {
+      await PaymentHistory.create({
+        company: booking.company,
+        bookingId: booking._id,
+        amount: bookingAmountPaid,
+        paymentMethod,
+        upiLast4: upiList,
+        type: "booking",
+        createdBy: req.user?._id,
+      });
+    }
  
     await booking.populate({
       path: "vehicleId",
