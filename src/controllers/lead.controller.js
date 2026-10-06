@@ -39,7 +39,7 @@ const generateBookingCode = (name, phone) => {
   const prefix = "MS";
   const nameChar = name ? name.trim().charAt(0).toUpperCase() : "X";
   const phoneSuffix = phone && phone.length >= 2 ? phone.slice(-2) : "00";
-  const dateDay = String(new Date().getDate()).padStart(2, '0');
+  const dateDay = String(new Date().getDate()).padStart(2, "0");
   const randomChars = Math.random().toString(36).substring(2, 6).toUpperCase();
   return `${prefix}${nameChar}${phoneSuffix}${dateDay}${randomChars}`;
 };
@@ -742,7 +742,7 @@ export const getLeads = async (req, res) => {
           { vehicleName: { $regex: search.trim(), $options: "i" } },
         ];
       }
-      
+
       if (tab === "app_leads") {
         custTotal = await CustomerAppLead.countDocuments(custQuery);
         const customerLeadsRaw = await CustomerAppLead.find(custQuery)
@@ -750,10 +750,15 @@ export const getLeads = async (req, res) => {
           .skip((page - 1) * limit)
           .limit(limit)
           .lean();
-          
-        console.log("Found CustomerAppLeads:", customerLeadsRaw.length, "Total:", custTotal);
-        
-        mappedCustomerLeads = customerLeadsRaw.map(c => ({
+
+        console.log(
+          "Found CustomerAppLeads:",
+          customerLeadsRaw.length,
+          "Total:",
+          custTotal,
+        );
+
+        mappedCustomerLeads = customerLeadsRaw.map((c) => ({
           _id: c._id,
           leadId: c._id.toString().substring(0, 8).toUpperCase(),
           customerName: c.customerName || "App User",
@@ -768,15 +773,15 @@ export const getLeads = async (req, res) => {
           updatedAt: c.updatedAt,
           source: "Customer App",
           nextFollowupDate: new Date(),
-          isCustomerApp: true
+          isCustomerApp: true,
         }));
       } else if (page === 1 && tab === "new") {
         const customerLeadsRaw = await CustomerAppLead.find(custQuery)
           .sort({ createdAt: -1 })
           .limit(50)
           .lean();
-          
-        mappedCustomerLeads = customerLeadsRaw.map(c => ({
+
+        mappedCustomerLeads = customerLeadsRaw.map((c) => ({
           _id: c._id,
           leadId: c._id.toString().substring(0, 8).toUpperCase(),
           customerName: c.customerName || "App User",
@@ -791,15 +796,19 @@ export const getLeads = async (req, res) => {
           updatedAt: c.updatedAt,
           source: "Customer App",
           nextFollowupDate: new Date(),
-          isCustomerApp: true
+          isCustomerApp: true,
         }));
       }
     } catch (err) {
       console.log("Error fetching CustomerAppLeads:", err.message);
     }
 
-    const combinedLeads = tab === "app_leads" ? mappedCustomerLeads : [...mappedCustomerLeads, ...leads];
-    const finalTotal = tab === "app_leads" ? custTotal : total + mappedCustomerLeads.length;
+    const combinedLeads =
+      tab === "app_leads"
+        ? mappedCustomerLeads
+        : [...mappedCustomerLeads, ...leads];
+    const finalTotal =
+      tab === "app_leads" ? custTotal : total + mappedCustomerLeads.length;
 
     // ==========================================
     // Response
@@ -2041,7 +2050,10 @@ export const createLeadBooking = async (req, res, next) => {
       lead: lead._id,
       company: companyId,
       createdBy: req.user._id,
-      bookingCode: generateBookingCode(customerName?.trim() || lead.customerName, mobileNumber?.trim() || lead.mobileNumber),
+      bookingCode: generateBookingCode(
+        customerName?.trim() || lead.customerName,
+        mobileNumber?.trim() || lead.mobileNumber,
+      ),
 
       customerName: customerName?.trim() || lead.customerName,
       mobileNumber: mobileNumber?.trim() || lead.mobileNumber,
@@ -3246,32 +3258,31 @@ const calculateTotalDaysFromDates = (fromDate, toDate) => {
   return diffDays < 1 ? 1 : diffDays;
 };
 
-
 const PAYMENT_METHODS = ["cash", "phonepe", "razorpay", "mixed"];
- 
+
 export const updateBooking = async (req, res, next) => {
   try {
     const { id } = req.params;
- 
+
     const booking = await Booking.findOne({
       _id: id,
       isDeleted: false,
     });
- 
+
     if (!booking) {
       return res.status(404).json({
         success: false,
         message: "Booking not found.",
       });
     }
- 
+
     if (booking.status === "cancelled") {
       return res.status(400).json({
         success: false,
         message: "Cancelled bookings cannot be edited.",
       });
     }
- 
+
     const {
       customerName,
       mobileNumber,
@@ -3286,25 +3297,24 @@ export const updateBooking = async (req, res, next) => {
       pickupTime,
       dropTime,
       residents,
- 
+
       vehicleId,
- 
+
       pickupDropRequired = false,
       serviceType = "pickup_drop",
- 
+
       pickup = {},
       drop = {},
       pickupDropNotes = "",
- 
+
       // Pricing fields arrive nested inside `payment: {...}`
       payment: paymentInput = {},
- 
-      // The frontend also sends these at the top level (same as Create
-      // Booking) — used as a fallback if `payment` doesn't carry them.
+
+      // Also sent at top level by the frontend — used as a fallback
       paymentMethod: topLevelPaymentMethod,
       upiLast4: topLevelUpiLast4,
     } = req.body;
- 
+
     const {
       discountAmount: discountAmountInput,
       securityDeposit: securityDepositInput,
@@ -3313,67 +3323,67 @@ export const updateBooking = async (req, res, next) => {
       paymentMethod: paymentMethodInput,
       upiLast4: upiLast4Input,
     } = paymentInput || {};
- 
+
     // =========================
     // PAYMENT METHOD + UPI LAST 4
     // =========================
- 
+
     const paymentMethod = String(
       paymentMethodInput || topLevelPaymentMethod || "cash",
     ).toLowerCase();
- 
+
     if (!PAYMENT_METHODS.includes(paymentMethod)) {
       return res.status(400).json({
         success: false,
         message: `Invalid payment method. Allowed: ${PAYMENT_METHODS.join(", ")}.`,
       });
     }
- 
-    // Keep digits only; UPI last 4 is only meaningful for PhonePe
+
+    // Digits only; UPI last 4 is only meaningful for PhonePe
     const rawUpi = String(upiLast4Input ?? topLevelUpiLast4 ?? "").replace(
       /\D/g,
       "",
     );
     const upiLast4 = paymentMethod === "phonepe" ? rawUpi : "";
- 
+
     if (upiLast4 && upiLast4.length !== 4) {
       return res.status(400).json({
         success: false,
         message: "UPI last 4 digits must be exactly 4 numbers.",
       });
     }
- 
+
     // =========================
     // VEHICLE
     // =========================
- 
+
     if (!vehicleId) {
       return res.status(400).json({
         success: false,
         message: "Vehicle is required.",
       });
     }
- 
+
     const vehicle = await Vehicle.findById(vehicleId);
- 
+
     if (!vehicle || vehicle.isDeleted) {
       return res.status(404).json({
         success: false,
         message: "Vehicle not found.",
       });
     }
- 
+
     // Log a history entry if the vehicle is actually being changed
     const previousVehicle = {
       vehicleId: booking.vehicleId,
       vehicleName: booking.vehicleName,
       vehicleNumber: booking.vehicleNumber,
     };
- 
+
     const isVehicleChanged =
       previousVehicle.vehicleId &&
       previousVehicle.vehicleId.toString() !== vehicle._id.toString();
- 
+
     if (isVehicleChanged) {
       booking.vehicleHistory = booking.vehicleHistory || [];
       booking.vehicleHistory.push({
@@ -3393,57 +3403,57 @@ export const updateBooking = async (req, res, next) => {
         }) to ${vehicle.vehicleName} (${vehicle.vehicleNumber})`,
       });
     }
- 
+
     // =========================
     // DATES
     // =========================
- 
+
     const finalFromDate = new Date(fromDate);
     const finalToDate = new Date(toDate);
- 
+
     if (isNaN(finalFromDate.getTime()) || isNaN(finalToDate.getTime())) {
       return res.status(400).json({
         success: false,
         message: "Invalid pickup or drop date.",
       });
     }
- 
+
     if (finalToDate.getTime() < finalFromDate.getTime()) {
       return res.status(400).json({
         success: false,
         message: "Drop date cannot be before pickup date.",
       });
     }
- 
+
     // Recomputed server-side — client totalDays is never trusted
     const finalTotalDays = calculateTotalDaysFromDates(
       finalFromDate,
       finalToDate,
     );
- 
+
     // =========================
     // PRICING (recomputed server-side)
     // =========================
- 
+
     const vehicleRent = Number(vehicle.pricePerDay || 0) * finalTotalDays;
- 
+
     const pickupCharge =
       pickupDropRequired &&
       (serviceType === "pickup" || serviceType === "pickup_drop")
         ? Number(pickup.charge || 0)
         : 0;
- 
+
     const dropCharge =
       pickupDropRequired &&
       (serviceType === "drop" || serviceType === "pickup_drop")
         ? Number(drop.charge || 0)
         : 0;
- 
+
     const fastagAmount = Number(fastagAmountInput || 0);
     const discountAmount = Number(discountAmountInput || 0);
     const securityDeposit = Number(securityDepositInput || 0);
     const bookingAmountPaid = Number(bookingAmountPaidInput || 0);
- 
+
     if (
       [
         pickupCharge,
@@ -3459,14 +3469,14 @@ export const updateBooking = async (req, res, next) => {
         message: "Amounts must be valid non-negative numbers.",
       });
     }
- 
+
     // Vehicle + Pickup + Drop + FASTag (security deposit is separate)
     const totalAmount = vehicleRent + pickupCharge + dropCharge + fastagAmount;
- 
+
     // =========================
     // UPDATE — CUSTOMER / TRIP FIELDS
     // =========================
- 
+
     booking.customerName = customerName?.trim() || "";
     booking.mobileNumber = mobileNumber?.trim() || "";
     booking.alternateMobileNumber = alternateMobileNumber?.trim() || "";
@@ -3475,33 +3485,34 @@ export const updateBooking = async (req, res, next) => {
     booking.aadhaarNumber = aadhaarNumber?.trim() || "";
     booking.drivingLicenseNumber =
       drivingLicenseNumber?.trim().toUpperCase() || "";
- 
+
     booking.tripType = tripType || "local";
- 
+
     booking.fromDate = finalFromDate;
     booking.toDate = finalToDate;
     booking.pickupTime = pickupTime || "09:00 AM";
     booking.dropTime = dropTime || "06:00 PM";
     booking.totalDays = finalTotalDays;
- 
+
     // Only overwrite residents if the client actually sent it
     if (residents !== undefined) {
       booking.residents = Number(residents) || 1;
     }
- 
+
     booking.vehicleId = vehicle._id;
     booking.vehicleName = vehicle.vehicleName;
     booking.vehicleNumber = vehicle.vehicleNumber;
     booking.vehicleColor = vehicle.color;
- 
+
     // =========================
-    // UPDATE — PAYMENT
+    // UPDATE — BOOKING PAYMENT (amounts)
     // balanceAmount / totalCollected / paymentStatus are recomputed by
-    // the schema's pre-save hook.
+    // the schema's pre-save hook. UPI last 4 is NOT stored on the
+    // booking — it lives in PaymentHistory.
     // =========================
- 
+
     booking.payment = booking.payment || {};
- 
+
     booking.payment.vehicleRent = vehicleRent;
     booking.payment.pickupCharge = pickupCharge;
     booking.payment.dropCharge = dropCharge;
@@ -3511,79 +3522,107 @@ export const updateBooking = async (req, res, next) => {
     booking.payment.securityDeposit = securityDeposit;
     booking.payment.bookingAmountPaid = bookingAmountPaid;
     booking.payment.paymentMethod = paymentMethod;
- 
-    // Keep the per-method breakdown in sync with the advance paid.
-    // For "mixed", the existing breakdown is left untouched.
-    if (paymentMethod !== "mixed") {
-      booking.payment.paymentBreakdown = {
-        cash: paymentMethod === "cash" ? bookingAmountPaid : 0,
-        phonePe: paymentMethod === "phonepe" ? bookingAmountPaid : 0,
-        razorpay: paymentMethod === "razorpay" ? bookingAmountPaid : 0,
-      };
+
+    // Per-method breakdown of the advance. For "mixed", keep the existing split.
+    const paymentBreakdown =
+      paymentMethod === "mixed"
+        ? null
+        : {
+            cash: paymentMethod === "cash" ? bookingAmountPaid : 0,
+            phonePe: paymentMethod === "phonepe" ? bookingAmountPaid : 0,
+            razorpay: paymentMethod === "razorpay" ? bookingAmountPaid : 0,
+          };
+
+    if (paymentBreakdown) {
+      booking.payment.paymentBreakdown = paymentBreakdown;
     }
- 
+
     // =========================
     // UPDATE — PICKUP / DROP SERVICE
     // =========================
- 
+
     booking.pickupDropRequired = Boolean(pickupDropRequired);
     booking.serviceType = serviceType;
- 
+
     booking.pickup = {
       location: pickup.location?.trim() || "",
       landmark: pickup.landmark?.trim() || "",
       mapLink: pickup.mapLink?.trim() || "",
       charge: pickupCharge,
     };
- 
+
     booking.drop = {
       location: drop.location?.trim() || "",
       landmark: drop.landmark?.trim() || "",
       mapLink: drop.mapLink?.trim() || "",
       charge: dropCharge,
     };
- 
+
     booking.pickupDropNotes = pickupDropNotes?.trim() || "";
- 
+
     await booking.save();
- 
+
     // =========================
-    // PAYMENT HISTORY — store payment method + UPI last 4
+    // PAYMENT HISTORY — payment method + UPI last 4 live here
+    // One atomic upsert: updates the latest "booking" entry, or creates it.
     // =========================
- 
+
     const upiList = paymentMethod === "phonepe" && upiLast4 ? [upiLast4] : [];
- 
-    const historyEntry = await PaymentHistory.findOne({
-      bookingId: booking._id,
-      type: "booking",
-    }).sort({ createdAt: -1 });
- 
-    if (historyEntry) {
-      historyEntry.paymentMethod = paymentMethod;
-      historyEntry.upiLast4 = upiList;
-      await historyEntry.save();
-    } else {
-      await PaymentHistory.create({
-        company: booking.company,
-        bookingId: booking._id,
-        amount: bookingAmountPaid,
-        paymentMethod,
-        upiLast4: upiList,
-        type: "booking",
-        createdBy: req.user?._id,
-      });
+
+    const historySet = {
+      amount: bookingAmountPaid,
+      paymentMethod,
+      upiLast4: upiList,
+      "booking.fromDate": booking.fromDate,
+      "booking.toDate": booking.toDate,
+      "booking.bookingAmount": bookingAmountPaid,
+      "customer.fullName": booking.customerName,
+      "customer.mobileNumber": booking.mobileNumber,
+      "vehicle.vehicleId": booking.vehicleId,
+      "vehicle.vehicleName": booking.vehicleName,
+      "vehicle.vehicleNumber": booking.vehicleNumber,
+    };
+
+    if (paymentBreakdown) {
+      historySet.paymentBreakdown = paymentBreakdown;
     }
- 
+
+    const paymentHistory = await PaymentHistory.findOneAndUpdate(
+      { bookingId: booking._id, type: "booking" },
+      {
+        $set: historySet,
+        $setOnInsert: {
+          company: booking.company,
+          createdBy: req.user?._id,
+        },
+      },
+      {
+        upsert: true,
+        returnDocument: "after",
+        sort: { createdAt: -1 },
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      },
+    );
+
+    console.log(
+      "PaymentHistory saved:",
+      paymentHistory?._id?.toString(),
+      paymentHistory?.paymentMethod,
+      paymentHistory?.upiLast4,
+    );
+
     await booking.populate({
       path: "vehicleId",
       select:
         "vehicleName vehicleNumber manufacturer model color pricePerDay images",
     });
- 
+
     return res.status(200).json({
       success: true,
       message: "Booking updated successfully.",
       booking,
+      paymentHistory,
     });
   } catch (error) {
     next(error);
@@ -3653,6 +3692,12 @@ export const getCustomerAppLeads = async (req, res) => {
     res.status(200).json({ success: true, data: leads });
   } catch (error) {
     console.error("getCustomerAppLeads error:", error);
-    res.status(500).json({ success: false, message: "Error fetching app leads", error: error.message });
+    res
+      .status(500)
+      .json({
+        success: false,
+        message: "Error fetching app leads",
+        error: error.message,
+      });
   }
 };
