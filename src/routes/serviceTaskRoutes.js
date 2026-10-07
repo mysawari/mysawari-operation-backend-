@@ -5,9 +5,9 @@ import { assignServiceTask, getServiceTaskById, getServiceTasks, getTeamMembers 
 const router = express.Router();
 
 router.get("/", protect, getServiceTasks);
-router.get("/:id", protect, getServiceTaskById);
-
 router.get("/team-members", protect, getTeamMembers);
+
+router.get("/:id", protect, getServiceTaskById);
 router.patch("/:id/assign", protect, assignServiceTask);
 
 export default router;
