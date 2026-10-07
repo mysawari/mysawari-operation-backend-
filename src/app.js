@@ -29,6 +29,7 @@ import membershipRoutes from "./routes/membership.routes.js";
 import referralRoutes from "./routes/referral.routes.js";
 import refundRoutes from "./routes/refund.routes.js";
 import extendBookingRoutes from "./routes/extendBooking.routes.js";
+import ServiceTask from "./routes/serviceTaskRoutes.js"
 dotenv.config();
 
 const app = express();
@@ -154,6 +155,8 @@ app.use("/api/v1/referrals", referralRoutes);
 
 app.use("/api/v1/refunds", refundRoutes);
 app.use("/api/v1/extensions", extendBookingRoutes);
+
+app.use("/api/v1/service", ServiceTask);
 
 // root health check
 app.get("/", (req, res) => {
