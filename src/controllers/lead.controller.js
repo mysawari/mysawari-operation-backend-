@@ -6,6 +6,7 @@ import Vehicle from "../models/vehicle.model.js";
 import PaymentHistory from "../models/paymentHistory.model.js";
 import CustomerAppLead from "../models/customerAppLead.model.js";
 import { sendBookingCreatedMessage } from "../services/wati.service.js";
+import ServiceTask from "../models/ServiceTask.js";
 
 const dashboardCache = new Map();
 const CACHE_TTL_MS = 8000;
