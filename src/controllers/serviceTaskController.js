@@ -44,6 +44,9 @@ const toCard = (task) => ({
   reachLocation: task.reachLocation,
   completedAt: task.completedAt,
   completeLocation: task.completeLocation,
+
+  cancelledAt: task.cancelledAt,
+  cancelReason: task.cancelReason,
 });
 
 export const getServiceTasks = async (req, res, next) => {
@@ -243,6 +246,183 @@ export const assignServiceTask = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "Team member assigned.",
+      data: toCard(task),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/* ================================================================== */
+/*  NEW — Start / Reached / Complete        (assigned team member)     */
+/*                                                                     */
+/*  PATCH /api/v1/service/:id/start      assigned   → on_the_way       */
+/*  PATCH /api/v1/service/:id/reach      on_the_way → reached          */
+/*  PATCH /api/v1/service/:id/complete   reached    → completed        */
+/*                                                                     */
+/*  Body: { locationName?: "Ganeshguri, Dispur" }                      */
+/*  Saves the time + location name and moves to the next status.      */
+/* ================================================================== */
+const STEPS = {
+  start: {
+    from: ["assigned", "pending"], // pending = assigned to me, status not updated
+    to: "on_the_way",
+    time: "startedAt",
+    place: "startLocation",
+  },
+  reach: {
+    from: ["on_the_way"],
+    to: "reached",
+    time: "reachedAt",
+    place: "reachLocation",
+  },
+  complete: {
+    from: ["reached"],
+    to: "completed",
+    time: "completedAt",
+    place: "completeLocation",
+  },
+};
+
+// Used in error messages
+const STATUS_TEXT = {
+  pending: "not assigned yet",
+  assigned: "not started yet",
+  on_the_way: "already started",
+  reached: "already reached",
+  completed: "already completed",
+  cancelled: "cancelled",
+};
+
+const runStep = (stepKey) => async (req, res, next) => {
+  try {
+    const step = STEPS[stepKey];
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: "Invalid task id." });
+    }
+
+    const locationName = String(req.body?.locationName || "")
+      .trim()
+      .slice(0, 300);
+
+    // Update only if: it's MY task AND it's at the right step.
+    // The check is inside the update, so a double tap can't save twice.
+    const task = await ServiceTask.findOneAndUpdate(
+      { _id: id, assignedTo: req.user._id, status: { $in: step.from } },
+      {
+        $set: {
+          status: step.to,
+          [step.time]: new Date(),
+          [step.place]: locationName,
+        },
+      },
+      { new: true },
+    )
+      .populate("assignedTo", "fullName mobileNumber")
+      .lean();
+
+    // Nothing updated → tell the app why
+    if (!task) {
+      const existing = await ServiceTask.findById(id)
+        .select("status assignedTo")
+        .lean();
+
+      if (!existing) {
+        return res.status(404).json({ success: false, message: "Task not found." });
+      }
+
+      if (String(existing.assignedTo) !== String(req.user._id)) {
+        return res.status(403).json({
+          success: false,
+          message: "Only the assigned team member can update this task.",
+        });
+      }
+
+      return res.status(409).json({
+        success: false,
+        message: `This task is ${STATUS_TEXT[existing.status]}. Pull down to refresh.`,
+      });
+    }
+
+    return res.status(200).json({ success: true, data: toCard(task) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const startServiceTask = runStep("start");
+export const reachServiceTask = runStep("reach");
+export const completeServiceTask = runStep("complete");
+
+/* ================================================================== */
+/*  NEW — PATCH /api/v1/service/:id/cancel                             */
+/*                                                                     */
+/*  Who: the assigned driver (own task) OR a team leader (company).   */
+/*  Body: { reason?: string }                                          */
+/*  Works on any task that isn't completed or already cancelled.       */
+/* ================================================================== */
+export const cancelServiceTask = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.user.company || req.user._id;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: "Invalid task id." });
+    }
+
+    // Leader: any task in the company (or their own). Driver: own task only.
+    const whoCanCancel = isLeader(req.user)
+      ? { $or: [{ company: companyId }, { assignedTo: req.user._id }] }
+      : { assignedTo: req.user._id };
+
+    const task = await ServiceTask.findOneAndUpdate(
+      { _id: id, ...whoCanCancel, status: { $in: ACTIVE_STATUSES } },
+      {
+        $set: {
+          status: "cancelled",
+          cancelledAt: new Date(),
+          cancelledBy: req.user._id,
+          cancelReason: String(req.body?.reason || "")
+            .trim()
+            .slice(0, 300),
+        },
+      },
+      { new: true },
+    )
+      .populate("assignedTo", "fullName mobileNumber")
+      .lean();
+
+    if (!task) {
+      const existing = await ServiceTask.findById(id)
+        .select("status company assignedTo")
+        .lean();
+
+      if (!existing) {
+        return res.status(404).json({ success: false, message: "Task not found." });
+      }
+
+      const allowed =
+        String(existing.assignedTo) === String(req.user._id) ||
+        (isLeader(req.user) && String(existing.company) === String(companyId));
+
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only cancel tasks assigned to you.",
+        });
+      }
+
+      return res.status(409).json({
+        success: false,
+        message: `This task is ${STATUS_TEXT[existing.status]}. It can't be cancelled.`,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Task cancelled.",
       data: toCard(task),
     });
   } catch (error) {
