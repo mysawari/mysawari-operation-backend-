@@ -262,6 +262,10 @@ const bookingSchema = new mongoose.Schema(
         enum: ["paid", "partial", "pending"],
         default: "pending",
       },
+      customPaymentDate: {
+        type: Date,
+        default: null,
+      },
     },
     vehicleHistory: [
       {

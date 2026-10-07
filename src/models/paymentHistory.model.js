@@ -43,6 +43,10 @@ const paymentHistorySchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    customPaymentDate: {
+      type: Date,
+      default: null,
+    },
 
     bookingId: {
       type: mongoose.Schema.Types.ObjectId,

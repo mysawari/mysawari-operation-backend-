@@ -259,6 +259,7 @@ export const receiveVehicle = async (req, res) => {
       paymentBreakdown, // object (JSON body) or JSON string
       balanceReason,
       upiLast4,
+      customPaymentDate,
  
       needsMaintenance,
       maintenanceReason,
@@ -850,6 +851,7 @@ export const receiveVehicle = async (req, res) => {
           amount: collected,
           paymentMethod: finalPaymentMethod,
           upiLast4: isUpiPayment ? normalizedUpiLast4 : [],
+          customPaymentDate: (isUpiPayment && customPaymentDate) ? new Date(customPaymentDate) : null,
  
           paymentBreakdown: {
             cash: Number(parsedPaymentBreakdown?.cash) || 0,
@@ -948,6 +950,10 @@ export const receiveVehicle = async (req, res) => {
       totalCollected: Number(existingBill.totalCollected || 0) + collected,
       balanceAmount: finalBalance,
     };
+    
+    if (isUpiPayment && customPaymentDate) {
+      handover.customPaymentDate = new Date(customPaymentDate);
+    }
  
     handover.markModified("payment.billSummary");
  

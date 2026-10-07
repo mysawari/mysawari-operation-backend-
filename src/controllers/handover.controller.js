@@ -798,6 +798,8 @@ export const createHandover = async (req, res, next) => {
 
         paymentMethod: payment?.paymentMethod || "cash",
 
+        customPaymentDate: payment?.customPaymentDate || null,
+
         upiLast4: normalizedUpiLast4,
 
         paymentBreakdown: {
