@@ -20,6 +20,7 @@ const serviceTaskSchema = new mongoose.Schema(
     vehicleName: { type: String, default: "" },
     vehicleNumber: { type: String, default: "" },
     address: { type: String, default: "" },
+    landmark: { type: String, default: "" }, // NEW — set from the Add Drop popup
 
     // Time the team member should reach the location
     scheduledAt: { type: Date, required: true },
@@ -62,10 +63,18 @@ const serviceTaskSchema = new mongoose.Schema(
     // Team member taps Complete
     completedAt: { type: Date, default: null },
     completeLocation: { type: String, default: "" },
+
+    // NEW — Driver or team leader taps Cancel
+    cancelledAt: { type: Date, default: null },
+    cancelledBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    cancelReason: { type: String, default: "" },
   },
   { timestamps: true },
 );
-
 
 serviceTaskSchema.index({ booking: 1, type: 1 }, { unique: true });
 
