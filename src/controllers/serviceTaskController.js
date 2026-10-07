@@ -27,6 +27,7 @@ const toCard = (task) => ({
   vehicleName: task.vehicleName,
   vehicleNumber: task.vehicleNumber,
   address: task.address,
+  landmark: task.landmark || "",
   scheduledAt: task.scheduledAt,
 
   assignedTo: task.assignedTo
@@ -426,6 +427,229 @@ export const cancelServiceTask = async (req, res, next) => {
       data: toCard(task),
     });
   } catch (error) {
+    next(error);
+  }
+};
+
+/* ================================================================== */
+/*  NEW — GET /api/v1/service/by-bookings?bookingIds=a,b,c&type=drop   */
+/*                                                                     */
+/*  Receive Desk: one call returns the drop (or pickup) task for every */
+/*  booking on screen.                                                 */
+/*  Response: { data: { "<bookingId>": card, ... } }                   */
+/*  Bookings with no task are simply missing from `data`.             */
+/*  Leaders see company tasks; others see only tasks assigned to them.*/
+/* ================================================================== */
+export const getTasksForBookings = async (req, res, next) => {
+  try {
+    const type = req.query.type === "pickup" ? "pickup" : "drop";
+    const ids = String(req.query.bookingIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => mongoose.isValidObjectId(s))
+      .slice(0, 100);
+
+    if (!ids.length) {
+      return res.status(200).json({ success: true, data: {} });
+    }
+
+    const companyId = req.user.company || req.user._id;
+
+    const tasks = await ServiceTask.find({
+      booking: { $in: ids },
+      type,
+      ...(isLeader(req.user)
+        ? { $or: [{ company: companyId }, { assignedTo: req.user._id }] }
+        : { assignedTo: req.user._id }),
+    })
+      .populate("assignedTo", "fullName mobileNumber")
+      .lean();
+
+    const data = {};
+    tasks.forEach((t) => {
+      data[String(t.booking)] = toCard(t);
+    });
+
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/* ================================================================== */
+/*  NEW — POST /api/v1/service/drop-task          (team leaders)       */
+/*                                                                     */
+/*  "Add Drop" / "Edit Drop" popup on the Receive Desk.               */
+/*  Body:                                                              */
+/*    bookingId    (required)                                          */
+/*    address      (required)  drop location                           */
+/*    landmark     (optional)                                          */
+/*    scheduledAt  (required)  reach-by time, ISO date                 */
+/*    assignedTo   (required)  driver's user id                        */
+/*                                                                     */
+/*  • No drop task yet       → creates one, already assigned           */
+/*  • pending / assigned     → updates location, time, driver          */
+/*  • cancelled              → re-opens it as a fresh assigned drop    */
+/*  • started / completed    → refused (409)                           */
+/*  No payment fields are touched.                                     */
+/* ================================================================== */
+export const saveDropTask = async (req, res, next) => {
+  try {
+    const { bookingId, address, landmark, scheduledAt, assignedTo } =
+      req.body || {};
+    const companyId = req.user.company || req.user._id;
+
+    // 1. Only team leaders
+    if (!isLeader(req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only team leaders can add a drop.",
+      });
+    }
+
+    // 2. Check the form
+    if (!mongoose.isValidObjectId(bookingId)) {
+      return res.status(400).json({ success: false, message: "Invalid booking." });
+    }
+
+    const cleanAddress = String(address || "").trim().slice(0, 300);
+    if (!cleanAddress) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Drop location is required." });
+    }
+
+    const reachTime = new Date(scheduledAt);
+    if (!scheduledAt || isNaN(reachTime.getTime())) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Please choose the date and time." });
+    }
+
+    if (!mongoose.isValidObjectId(assignedTo)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Please select a driver." });
+    }
+
+    // 3. Driver must be an active user of the same business
+    const member = await User.findOne({
+      _id: assignedTo,
+      businessName: req.user.businessName,
+      accountStatus: "ACTIVE",
+      deletedAt: null,
+    })
+      .select("_id")
+      .lean();
+
+    if (!member) {
+      return res.status(404).json({ success: false, message: "Driver not found." });
+    }
+
+    // 4. Booking (uses the "Booking" model your app already registers)
+    const Booking = mongoose.model("Booking");
+    const booking = await Booking.findById(bookingId)
+      .select("bookingCode customerName mobileNumber vehicleName vehicleNumber")
+      .lean();
+
+    if (!booking) {
+      return res.status(404).json({ success: false, message: "Booking not found." });
+    }
+
+    const assignFields = {
+      address: cleanAddress,
+      landmark: String(landmark || "").trim().slice(0, 200),
+      scheduledAt: reachTime,
+      assignedTo: member._id,
+      assignedBy: req.user._id,
+      assignedAt: new Date(),
+      status: "assigned",
+    };
+
+    // 5. Existing drop task for this booking?
+    const existing = await ServiceTask.findOne({ booking: bookingId, type: "drop" })
+      .select("status")
+      .lean();
+
+    if (existing && ["on_the_way", "reached", "completed"].includes(existing.status)) {
+      return res.status(409).json({
+        success: false,
+        message: `This drop is ${STATUS_TEXT[existing.status]}. It can't be changed now.`,
+      });
+    }
+
+    let taskId;
+
+    if (existing) {
+      // Update (pending / assigned) or re-open (cancelled)
+      const reopen =
+        existing.status === "cancelled"
+          ? {
+              startedAt: null,
+              startLocation: "",
+              reachedAt: null,
+              reachLocation: "",
+              completedAt: null,
+              completeLocation: "",
+              cancelledAt: null,
+              cancelledBy: null,
+              cancelReason: "",
+            }
+          : {};
+
+      // Status check inside the update: safe if the driver taps Start now
+      const updated = await ServiceTask.findOneAndUpdate(
+        {
+          _id: existing._id,
+          status: { $in: ["pending", "assigned", "cancelled"] },
+        },
+        { $set: { ...assignFields, ...reopen } },
+        { new: true },
+      ).lean();
+
+      if (!updated) {
+        return res.status(409).json({
+          success: false,
+          message: "The drop just started. Pull down to refresh.",
+        });
+      }
+      taskId = updated._id;
+    } else {
+      // Create a new drop task, already assigned
+      const [created] = await ServiceTask.create([
+        {
+          company: companyId,
+          booking: booking._id,
+          bookingCode:
+            booking.bookingCode || String(booking._id).slice(-8).toUpperCase(),
+          type: "drop",
+          customerName: booking.customerName || "",
+          mobileNumber: booking.mobileNumber || "",
+          vehicleName: booking.vehicleName || "",
+          vehicleNumber: booking.vehicleNumber || "",
+          ...assignFields,
+        },
+      ]);
+      taskId = created._id;
+    }
+
+    const task = await ServiceTask.findById(taskId)
+      .populate("assignedTo", "fullName mobileNumber")
+      .lean();
+
+    return res.status(existing ? 200 : 201).json({
+      success: true,
+      message: existing ? "Drop updated." : "Drop added and assigned.",
+      data: toCard(task),
+    });
+  } catch (error) {
+    // Two leaders saving at the same moment → unique index (booking + type)
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "A drop was just added for this booking. Pull down to refresh.",
+      });
+    }
     next(error);
   }
 };

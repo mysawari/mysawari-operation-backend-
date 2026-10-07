@@ -6,16 +6,22 @@ import {
   completeServiceTask,
   getServiceTaskById,
   getServiceTasks,
+  getTasksForBookings,
   getTeamMembers,
   reachServiceTask,
+  saveDropTask,
   startServiceTask,
 } from "../controllers/serviceTaskController.js";
 
 const router = express.Router();
 
-// Fixed paths FIRST, so "team-members" is not treated as an :id
+// Fixed paths FIRST, so they are not treated as an :id
 router.get("/", protect, getServiceTasks);
 router.get("/team-members", protect, getTeamMembers);
+router.get("/by-bookings", protect, getTasksForBookings); // Receive Desk
+
+// Team leader: Add / Edit Drop (Receive Desk popup)
+router.post("/drop-task", protect, saveDropTask);
 
 router.get("/:id", protect, getServiceTaskById);
 
