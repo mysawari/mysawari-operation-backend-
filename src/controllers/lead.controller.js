@@ -2624,11 +2624,11 @@ export const createBooking = async (req, res, next) => {
 
     const normalizedUpiLast4 = String(upiLast4 || "").trim();
 
-    if (paymentMethod === "phonepe" && advancePaid > 0) {
+    if ((paymentMethod === "phonepe" || paymentMethod === "razorpay") && advancePaid > 0) {
       if (!/^\d{4}$/.test(normalizedUpiLast4)) {
         return res.status(400).json({
           success: false,
-          message: "PhonePe UPI last 4 digits are required.",
+          message: `${paymentMethod === "phonepe" ? "PhonePe" : "Razorpay"} UPI last 4 digits are required.`,
         });
       }
     }
@@ -3080,7 +3080,7 @@ export const createBooking = async (req, res, next) => {
             paymentMethod,
 
             upiLast4:
-              paymentMethod === "phonepe" && normalizedUpiLast4
+              (paymentMethod === "phonepe" || paymentMethod === "razorpay") && normalizedUpiLast4
                 ? [normalizedUpiLast4]
                 : [],
 
@@ -3437,11 +3437,11 @@ export const createBookings = async (req, res, next) => {
 
     const normalizedUpiLast4 = String(upiLast4 || "").trim();
 
-    if (paymentMethod === "phonepe" && advancePaid > 0) {
+    if ((paymentMethod === "phonepe" || paymentMethod === "razorpay") && advancePaid > 0) {
       if (!/^\d{4}$/.test(normalizedUpiLast4)) {
         return res.status(400).json({
           success: false,
-          message: "PhonePe UPI last 4 digits are required.",
+          message: `${paymentMethod === "phonepe" ? "PhonePe" : "Razorpay"} UPI last 4 digits are required.`,
         });
       }
     }
@@ -3932,7 +3932,7 @@ export const createBookings = async (req, res, next) => {
             paymentMethod,
 
             upiLast4:
-              paymentMethod === "phonepe" && normalizedUpiLast4
+              (paymentMethod === "phonepe" || paymentMethod === "razorpay") && normalizedUpiLast4
                 ? [normalizedUpiLast4]
                 : [],
 
@@ -4363,7 +4363,7 @@ export const updateBooking = async (req, res, next) => {
       /\D/g,
       "",
     );
-    const upiLast4 = paymentMethod === "phonepe" ? rawUpi : "";
+    const upiLast4 = (paymentMethod === "phonepe" || paymentMethod === "razorpay") ? rawUpi : "";
 
     if (upiLast4 && upiLast4.length !== 4) {
       return res.status(400).json({
@@ -4632,7 +4632,7 @@ export const updateBooking = async (req, res, next) => {
     // One atomic upsert: updates the latest "booking" entry, or creates it.
     // =========================
 
-    const upiList = paymentMethod === "phonepe" && upiLast4 ? [upiLast4] : [];
+    const upiList = (paymentMethod === "phonepe" || paymentMethod === "razorpay") && upiLast4 ? [upiLast4] : [];
 
     const historySet = {
       amount: bookingAmountPaid,

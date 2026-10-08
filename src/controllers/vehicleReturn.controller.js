@@ -533,7 +533,8 @@ export const receiveVehicle = async (req, res) => {
  
     const isUpiPayment =
       normalizedPaymentMode === "PhonePe" ||
-      (normalizedPaymentMode === "Mixed" && parsedPaymentBreakdown.phonePe > 0);
+      normalizedPaymentMode === "Razorpay" ||
+      (normalizedPaymentMode === "Mixed" && (parsedPaymentBreakdown.phonePe > 0 || parsedPaymentBreakdown.razorpay > 0));
  
     if (
       isUpiPayment &&
