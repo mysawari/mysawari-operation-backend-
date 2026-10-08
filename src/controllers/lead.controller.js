@@ -4115,6 +4115,169 @@ const PAYMENT_METHODS = ["cash", "phonepe", "razorpay", "mixed"];
 
 export const updateBooking = async (req, res, next) => {
   try {
+    // =========================
+    // PICKUP / DROP TASK HELPERS (kept inside this function, so nothing
+    // else in the controller has to change)
+    // =========================
+
+    // "09:30 PM" → minutes of the day (same rules as createBookings)
+    const timeToMinutes = (timeString) => {
+      if (!timeString || typeof timeString !== "string") return 0;
+      const match = timeString.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (!match) return 0;
+
+      let hour = Number(match[1]);
+      const minute = Number(match[2]);
+      const period = match[3].toUpperCase();
+
+      if (period === "AM" && hour === 12) hour = 0;
+      if (period === "PM" && hour !== 12) hour += 12;
+      return hour * 60 + minute;
+    };
+
+    // pickupTime / dropTime are India time (UTC+05:30) — same as createBookings
+    const IST_OFFSET_MINUTES = 330;
+
+    // Reach time = booking date (UTC midnight) + time of day in IST
+    const bookingReachTime = (date, timeString) => {
+      const d = new Date(date);
+      if (isNaN(d.getTime())) return null;
+      const midnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+      return new Date(
+        midnight + (timeToMinutes(timeString) - IST_OFFSET_MINUTES) * 60 * 1000,
+      );
+    };
+
+    // Which service tasks a booking needs
+    const wantedServiceTypes = (pickupDropRequired, serviceType) => ({
+      pickup:
+        !!pickupDropRequired &&
+        (serviceType === "pickup" || serviceType === "pickup_drop"),
+      drop:
+        !!pickupDropRequired &&
+        (serviceType === "drop" || serviceType === "pickup_drop"),
+    });
+
+    // What the booking said BEFORE the edit (to see what really changed)
+    const snapshotServiceInfo = (booking) => ({
+      wanted: wantedServiceTypes(booking.pickupDropRequired, booking.serviceType),
+      pickup: {
+        address: booking.pickup?.location || "",
+        reachAt: bookingReachTime(booking.fromDate, booking.pickupTime || "08:00 AM"),
+      },
+      drop: {
+        address: booking.drop?.location || "",
+        reachAt: bookingReachTime(booking.toDate, booking.dropTime || "08:00 AM"),
+      },
+    });
+
+    const sameTime = (a, b) =>
+      (a?.getTime?.() ?? null) === (b?.getTime?.() ?? null);
+
+    const TASK_ACTIVE = ["pending", "assigned", "on_the_way", "reached"];
+
+    /**
+     * Keep the pickup / drop ServiceTasks in step with an edited booking.
+     *
+     *   needed + no task        → create it ("pending", like createBookings)
+     *   needed + not started    → update address / reach time IF the booking
+     *                             changed them (a leader's manual time or the
+     *                             Receive-Desk drop address is kept otherwise)
+     *   needed + cancelled      → re-open as "pending" only if the service was
+     *                             just turned back on in this edit
+     *   needed + started / done → only customer & vehicle details refresh
+     *   no longer needed        → active task is cancelled
+     *
+     * Driver assignment and the drop price are never touched.
+     * Returns a short summary for the response.
+     */
+    const syncServiceTasksForBooking = async (booking, before, userId) => {
+      const now = snapshotServiceInfo(booking);
+      const summary = { created: [], updated: [], reopened: [], cancelled: [] };
+
+      const details = {
+        bookingCode: booking.bookingCode,
+        customerName: booking.customerName,
+        mobileNumber: booking.mobileNumber,
+        vehicleName: booking.vehicleName,
+        vehicleNumber: booking.vehicleNumber,
+      };
+
+      for (const type of ["pickup", "drop"]) {
+        const task = await ServiceTask.findOne({ booking: booking._id, type });
+        const isWanted = now.wanted[type];
+        const wasWanted = before.wanted[type];
+
+        const addressChanged = now[type].address !== before[type].address;
+        const timeChanged = !sameTime(now[type].reachAt, before[type].reachAt);
+
+        // ---- No longer needed → cancel the open task ----
+        if (!isWanted) {
+          if (task && TASK_ACTIVE.includes(task.status)) {
+            task.status = "cancelled";
+            task.cancelledAt = new Date();
+            task.cancelledBy = userId;
+            task.cancelReason = `${type === "pickup" ? "Pickup" : "Drop"} removed from the booking.`;
+            await task.save();
+            summary.cancelled.push(type);
+          }
+          continue;
+        }
+
+        // ---- Needed, no task yet → create ----
+        if (!task) {
+          await ServiceTask.create({
+            company: booking.company,
+            booking: booking._id,
+            type,
+            status: "pending",
+            address: now[type].address,
+            scheduledAt: now[type].reachAt,
+            ...details,
+          });
+          summary.created.push(type);
+          continue;
+        }
+
+        // Customer / vehicle info always follows the booking
+        Object.assign(task, details);
+
+        if (task.status === "cancelled") {
+          // Re-open only when this edit switched the service back on
+          if (!wasWanted) {
+            Object.assign(task, {
+              status: "pending",
+              address: now[type].address,
+              scheduledAt: now[type].reachAt,
+              assignedTo: null,
+              assignedBy: null,
+              assignedAt: null,
+              startedAt: null,
+              startLocation: "",
+              reachedAt: null,
+              reachLocation: "",
+              completedAt: null,
+              completeLocation: "",
+              cancelledAt: null,
+              cancelledBy: null,
+              cancelReason: "",
+            });
+            summary.reopened.push(type);
+          }
+        } else if (["pending", "assigned"].includes(task.status)) {
+          // Not started → follow the booking's new address / time
+          if (addressChanged && now[type].address) task.address = now[type].address;
+          if (timeChanged && now[type].reachAt) task.scheduledAt = now[type].reachAt;
+          if (addressChanged || timeChanged) summary.updated.push(type);
+        }
+        // on_the_way / reached / completed → trip details left as they are
+
+        await task.save();
+      }
+
+      return summary;
+    };
+
     const { id } = req.params;
 
     const booking = await Booking.findOne({
@@ -4135,6 +4298,9 @@ export const updateBooking = async (req, res, next) => {
         message: "Cancelled bookings cannot be edited.",
       });
     }
+
+    // NEW (1/3): remember pickup / drop as they were BEFORE this edit
+    const serviceBefore = snapshotServiceInfo(booking);
 
     const {
       customerName,
@@ -4204,6 +4370,32 @@ export const updateBooking = async (req, res, next) => {
         success: false,
         message: "UPI last 4 digits must be exactly 4 numbers.",
       });
+    }
+
+    // =========================
+    // PICKUP / DROP VALIDATION  (NEW, same rules as createBookings)
+    // =========================
+
+    if (pickupDropRequired) {
+      if (
+        (serviceType === "pickup" || serviceType === "pickup_drop") &&
+        !pickup.location?.trim()
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Pickup location is required.",
+        });
+      }
+
+      if (
+        (serviceType === "drop" || serviceType === "pickup_drop") &&
+        !drop.location?.trim()
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Drop location is required.",
+        });
+      }
     }
 
     // =========================
@@ -4416,6 +4608,26 @@ export const updateBooking = async (req, res, next) => {
     await booking.save();
 
     // =========================
+    // NEW (2/3): PICKUP / DROP SERVICE TASKS
+    // Create / update / cancel the tasks so the Pickup & Drop screen
+    // matches the booking. A task problem never undoes the booking edit.
+    // =========================
+
+    let serviceTasks = null;
+    let serviceTaskWarning = "";
+    try {
+      serviceTasks = await syncServiceTasksForBooking(
+        booking,
+        serviceBefore,
+        req.user?._id,
+      );
+    } catch (taskError) {
+      console.error("Booking service task sync error:", taskError);
+      serviceTaskWarning =
+        " Pickup / drop tasks were not updated — please check the Pickup & Drop screen.";
+    }
+
+    // =========================
     // PAYMENT HISTORY — payment method + UPI last 4 live here
     // One atomic upsert: updates the latest "booking" entry, or creates it.
     // =========================
@@ -4473,9 +4685,10 @@ export const updateBooking = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      message: "Booking updated successfully.",
+      message: `Booking updated successfully.${serviceTaskWarning}`,
       booking,
       paymentHistory,
+      serviceTasks, // NEW (3/3): { created, updated, reopened, cancelled }
     });
   } catch (error) {
     next(error);
