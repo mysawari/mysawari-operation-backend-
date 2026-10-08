@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import ServiceTask from "../models/ServiceTask.js";
+import Handover from "../models/handover.model.js";
 import User from "../models/user.model.js";
 
 const ACTIVE_STATUSES = ["pending", "assigned", "on_the_way", "reached"];
@@ -51,8 +52,8 @@ const parseAmount = (v) => {
 
 const rupees = (n) => `₹${money(n).toLocaleString("en-IN")}`;
 
-// The Handover model your app already registers
-const HandoverModel = () => mongoose.model("Handover");
+// Handover model (imported at the top)
+const HandoverModel = () => Handover;
 
 // Same business? (company id match, or same businessName as a fallback)
 const isSameBusiness = async (req, companyRef) => {
@@ -210,8 +211,6 @@ const toBill = (doc) => {
 const BILL_RETRIES = 3;
 
 const updateBill = async (filter, mutate) => {
-  const Handover = HandoverModel();
-
   for (let attempt = 1; ; attempt++) {
     const h = await Handover.findOne({ ...filter, isDeleted: { $ne: true } });
     if (!h) throw new HttpError(404, "Handover (bill) not found.");
@@ -663,6 +662,7 @@ export const cancelServiceTask = async (req, res, next) => {
         );
         bill = toBill(handover);
       } catch (err) {
+        console.error("[cancelServiceTask] bill update failed:", task.booking, err);
         billWarning = ` Bill not updated: ${err.message || "error"}.`;
       }
     }
@@ -858,49 +858,55 @@ export const saveDropTask = async (req, res, next) => {
     };
 
     // 6. Existing drop task for this booking?
+    // The team can change a drop at ANY status (even started / done)
     const existing = await ServiceTask.findOne({ booking: bookingId, type: "drop" })
-      .select("status")
+      .select("status assignedTo")
       .lean();
-
-    if (existing && ["on_the_way", "reached", "completed"].includes(existing.status)) {
-      return res.status(409).json({
-        success: false,
-        message: `This drop is ${STATUS_TEXT[existing.status]}. It can't be changed now.`,
-      });
-    }
 
     let taskId;
 
     if (existing) {
-      const reopen =
-        existing.status === "cancelled"
-          ? {
-              startedAt: null,
-              startLocation: "",
-              reachedAt: null,
-              reachLocation: "",
-              completedAt: null,
-              completeLocation: "",
-              cancelledAt: null,
-              cancelledBy: null,
-              cancelReason: "",
-            }
-          : {};
+      const CLEAR_PROGRESS = {
+        startedAt: null,
+        startLocation: "",
+        reachedAt: null,
+        reachLocation: "",
+        completedAt: null,
+        completeLocation: "",
+      };
+
+      // Only details + price (keeps status, driver progress, assign info)
+      const { status, assignedAt, assignedBy, ...details } = assignFields;
+      const driverChanged = String(existing.assignedTo) !== String(member._id);
+      let update;
+
+      if (existing.status === "cancelled") {
+        // Re-open as a fresh assigned drop
+        update = {
+          ...assignFields,
+          ...CLEAR_PROGRESS,
+          cancelledAt: null,
+          cancelledBy: null,
+          cancelReason: "",
+        };
+      } else if (existing.status === "completed") {
+        // Finished: fix location / time / price, keep it completed
+        update = details;
+      } else if (["on_the_way", "reached"].includes(existing.status)) {
+        // Started: same driver → keep progress; new driver → restart for them
+        update = driverChanged ? { ...assignFields, ...CLEAR_PROGRESS } : details;
+      } else {
+        update = assignFields; // pending / assigned
+      }
 
       const updated = await ServiceTask.findOneAndUpdate(
-        {
-          _id: existing._id,
-          status: { $in: ["pending", "assigned", "cancelled"] },
-        },
-        { $set: { ...assignFields, ...reopen } },
+        { _id: existing._id },
+        { $set: update },
         { new: true },
       ).lean();
 
       if (!updated) {
-        return res.status(409).json({
-          success: false,
-          message: "The drop just started. Pull down to refresh.",
-        });
+        return res.status(404).json({ success: false, message: "Drop not found." });
       }
       taskId = updated._id;
     } else {
@@ -935,7 +941,8 @@ export const saveDropTask = async (req, res, next) => {
         );
         bill = toBill(saved);
       } catch (err) {
-        // Drop is saved; only the bill failed — tell the app
+        // Drop is saved; only the bill failed — tell the app + log it
+        console.error("[saveDropTask] bill update failed:", handover._id, err);
         billWarning = ` Bill not updated: ${err.message || "error"}.`;
       }
     }
