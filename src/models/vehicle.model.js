@@ -62,6 +62,24 @@ const vehicleSchema = new mongoose.Schema(
       default: "",
     },
 
+    engineCapacity: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    mileage: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    ac: {
+      type: String,
+      enum: ["Yes", "No", ""],
+      default: "",
+    },
+
     variant: {
       type: String,
       trim: true,
