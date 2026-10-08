@@ -80,6 +80,22 @@ const vehicleSchema = new mongoose.Schema(
       default: "",
     },
 
+    carPlay: { type: String, enum: ["Yes", "No", ""], default: "" },
+    bluetooth: { type: String, enum: ["Yes", "No", ""], default: "" },
+    touchscreen: { type: String, enum: ["Yes", "No", ""], default: "" },
+    usbCharging: { type: String, enum: ["Yes", "No", ""], default: "" },
+    sunroof: { type: String, enum: ["Yes", "No", ""], default: "" },
+    airbags: { type: String, enum: ["Yes", "No", ""], default: "" },
+    absEbd: { type: String, enum: ["Yes", "No", ""], default: "" },
+    rearParkingSensors: { type: String, enum: ["Yes", "No", ""], default: "" },
+    rearCamera: { type: String, enum: ["Yes", "No", ""], default: "" },
+    gps: { type: String, enum: ["Yes", "No", ""], default: "" },
+
+    digitalDisplay: { type: String, enum: ["Yes", "No", ""], default: "" },
+    bikeAbs: { type: String, enum: ["Yes", "No", ""], default: "" },
+    discBrakes: { type: String, enum: ["Yes", "No", ""], default: "" },
+    cbs: { type: String, enum: ["Yes", "No", ""], default: "" },
+
     variant: {
       type: String,
       trim: true,
