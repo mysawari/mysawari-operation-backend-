@@ -115,48 +115,44 @@ const toCard = (task) => ({
 /*    payment.refundedAmount       given back                          */
 /*    payment.billSummary.*        snapshot the app shows              */
 /*                                                                     */
-/*  The drop charge is kept in payment.billSummary.dropCharge and is   */
-/*  part of totalAmount. Changing it adds / removes only the           */
-/*  DIFFERENCE, so a Change Drop never counts the price twice.         */
+/*  A drop price is ADDED on top of the current bill:                  */
+/*    billSummary.dropCharge, totalAmount and balanceAmount go up by   */
+/*    the price. Change Drop adds / removes only the DIFFERENCE from   */
+/*    the price already added, so it is never counted twice.          */
 /* ================================================================== */
 
-// Rebuild billSummary from payment (same maths as the pre("save") hook)
-const syncBillSummary = (h) => {
-  const p = h.payment || {};
-  const totalAmount = money(p.totalAmount);
-  const bookingPaid = money(p.bookingAmountPaid);
-  const receivedNow = money(p.amountReceivedNow);
-  const refunded = money(p.refundedAmount);
-  const totalPaid = money(bookingPaid + receivedNow - refunded);
-
-  h.set("payment.billSummary.totalFare", money(p.totalFare));
-  h.set("payment.billSummary.fastTagPayable", money(p.fastTagPayableAmount));
-  h.set("payment.billSummary.securityDeposit", money(p.securityDeposit));
-  h.set("payment.billSummary.extraCharges", money(p.extraCharges));
-  h.set("payment.billSummary.discountAmount", money(p.discountAmount));
-  h.set("payment.billSummary.totalAmount", totalAmount);
-  h.set("payment.billSummary.bookingAmountPaid", bookingPaid);
-  h.set("payment.billSummary.amountReceivedNow", receivedNow);
-  h.set("payment.billSummary.refundedAmount", refunded);
-  h.set("payment.billSummary.totalCollected", totalPaid); // net, after refunds
-  h.set("payment.billSummary.balanceAmount", Math.max(0, money(totalAmount - totalPaid)));
-  h.set("payment.billSummary.refundDue", Math.max(0, money(totalPaid - totalAmount)));
-};
-
-// Set the drop charge → move totalAmount by the difference
-const applyDropCharge = (h, newCharge) => {
+/**
+ * Add a drop price CHANGE (delta) on top of the existing bill.
+ * Nothing is recalculated from scratch — the customer's current due
+ * stays as it is and only the difference is added / taken off.
+ *
+ *   delta = new drop price − drop price already put on the bill
+ *
+ *   billSummary.dropCharge  += delta   (keeps any booking drop charge)
+ *   billSummary.totalAmount += delta
+ *   billSummary.balanceAmount / refundDue move by delta
+ *   payment.totalAmount     += delta   (so the pre-save hook agrees)
+ */
+const applyDropDelta = (h, rawDelta) => {
   if (h.handoverStatus === "cancelled") {
     throw new HttpError(409, "This handover is cancelled. The bill can't be changed.");
   }
-  const oldCharge = money(h.payment?.billSummary?.dropCharge);
-  const charge = money(newCharge);
-  const delta = money(charge - oldCharge);
+  const delta = money(rawDelta);
+  if (delta === 0) return { delta: 0 };
 
-  if (delta !== 0) {
-    h.set("payment.totalAmount", Math.max(0, money(num(h.payment.totalAmount) + delta)));
-  }
-  h.set("payment.billSummary.dropCharge", charge);
-  return { oldCharge, newCharge: charge, delta };
+  const p = h.payment || {};
+  const bs = p.billSummary || {};
+
+  h.set("payment.totalAmount", Math.max(0, money(num(p.totalAmount) + delta)));
+  h.set("payment.billSummary.dropCharge", Math.max(0, money(num(bs.dropCharge) + delta)));
+  h.set("payment.billSummary.totalAmount", Math.max(0, money(num(bs.totalAmount) + delta)));
+
+  // Current net due (positive = customer owes, negative = we owe back)
+  const net = money(num(bs.balanceAmount) - num(bs.refundDue) + delta);
+  h.set("payment.billSummary.balanceAmount", Math.max(0, net));
+  h.set("payment.billSummary.refundDue", Math.max(0, -net));
+
+  return { delta };
 };
 
 // What the app gets back
@@ -169,8 +165,8 @@ const toBill = (doc) => {
     bookingId: h.bookingId ? String(h.bookingId) : "",
     dropCharge: money(bs.dropCharge),
     totalAmount: money(p.totalAmount),
-    balanceAmount: money(p.balanceAmount),
-    refundDue: money(p.refundDue),
+    balanceAmount: money(bs.balanceAmount),
+    refundDue: money(bs.refundDue),
     refundedAmount: money(p.refundedAmount),
     paymentStatus: p.paymentStatus || "pending",
     paymentMethod: p.paymentMethod || "",
@@ -216,7 +212,6 @@ const updateBill = async (filter, mutate) => {
     if (!h) throw new HttpError(404, "Handover (bill) not found.");
 
     const result = mutate(h); // may throw HttpError
-    syncBillSummary(h);
     h.increment();
 
     try {
@@ -286,52 +281,74 @@ const REFUND_KEYS = { cash: "cash", phonepe: "phonePe" };
 /*  TASK LIST / DETAILS                                                */
 /* ================================================================== */
 
+/* ------------------------------------------------------------------ */
+/*  GET /api/v1/service?scope=mine|all&type=all|pickup|drop            */
+/*                     &status=active|unassigned|completed             */
+/*                                                                     */
+/*  type=all         → pickups + drops together                        */
+/*  status=unassigned → open tasks with no one assigned (scope=all)    */
+/*  counts: { active, unassigned, completed }                          */
+/* ------------------------------------------------------------------ */
 export const getServiceTasks = async (req, res, next) => {
   try {
     const companyId = req.user.company || req.user._id;
 
     const scope = req.query.scope === "all" ? "all" : "mine";
-    const type = req.query.type === "drop" ? "drop" : "pickup";
-    const status = req.query.status === "completed" ? "completed" : "active";
+    const type = ["pickup", "drop"].includes(req.query.type)
+      ? req.query.type
+      : "all";
+    let status = ["completed", "unassigned"].includes(req.query.status)
+      ? req.query.status
+      : "active";
 
-    const filter = { type };
+    // "Unassigned" only makes sense for the whole team
+    if (scope === "mine" && status === "unassigned") status = "active";
+
+    const filter = {};
+    if (type !== "all") filter.type = type;
 
     if (scope === "mine") {
       // "My Tasks" = only tasks assigned to the logged-in user.
-      // No company filter here. The task's company is the
-      // leader's id, so a driver would never match it.
       filter.assignedTo = req.user._id;
     } else {
       // "All Tasks" = everything in my company
       filter.company = companyId;
     }
 
-    // Count active + completed (for the chip numbers in the app)
-    const [activeCount, completedCount] = await Promise.all([
-      ServiceTask.countDocuments({ ...filter, status: { $in: ACTIVE_STATUSES } }),
-      ServiceTask.countDocuments({ ...filter, status: "completed" }),
+    const UNASSIGNED = {
+      status: { $in: ACTIVE_STATUSES },
+      $or: [{ assignedTo: null }, { assignedTo: { $exists: false } }],
+    };
+
+    const STATUS_FILTER = {
+      active: { status: { $in: ACTIVE_STATUSES } },
+      completed: { status: "completed" },
+      unassigned: UNASSIGNED,
+    };
+
+    // Chip numbers
+    const [activeCount, completedCount, unassignedCount] = await Promise.all([
+      ServiceTask.countDocuments({ ...filter, ...STATUS_FILTER.active }),
+      ServiceTask.countDocuments({ ...filter, ...STATUS_FILTER.completed }),
+      scope === "all"
+        ? ServiceTask.countDocuments({ ...filter, ...UNASSIGNED })
+        : Promise.resolve(0),
     ]);
 
-    // Fetch the list
-    let tasks;
-    if (status === "completed") {
-      tasks = await ServiceTask.find({ ...filter, status: "completed" })
-        .sort({ completedAt: -1 }) // latest finished first
-        .limit(100)
-        .populate("assignedTo", "fullName mobileNumber")
-        .lean();
-    } else {
-      tasks = await ServiceTask.find({ ...filter, status: { $in: ACTIVE_STATUSES } })
-        .sort({ scheduledAt: 1 }) // earliest reach time first
-        .limit(100)
-        .populate("assignedTo", "fullName mobileNumber")
-        .lean();
-    }
+    const tasks = await ServiceTask.find({ ...filter, ...STATUS_FILTER[status] })
+      .sort(status === "completed" ? { completedAt: -1 } : { scheduledAt: 1 })
+      .limit(100)
+      .populate("assignedTo", "fullName mobileNumber")
+      .lean();
 
     return res.status(200).json({
       success: true,
       data: tasks.map(toCard),
-      counts: { active: activeCount, completed: completedCount },
+      counts: {
+        active: activeCount,
+        unassigned: unassignedCount,
+        completed: completedCount,
+      },
     });
   } catch (error) {
     next(error);
@@ -658,7 +675,7 @@ export const cancelServiceTask = async (req, res, next) => {
     if (task.type === "drop" && num(task.dropCharge) > 0) {
       try {
         const { handover } = await updateBill({ bookingId: task.booking }, (h) =>
-          applyDropCharge(h, 0),
+          applyDropDelta(h, -num(task.dropCharge)),
         );
         bill = toBill(handover);
       } catch (err) {
@@ -860,7 +877,7 @@ export const saveDropTask = async (req, res, next) => {
     // 6. Existing drop task for this booking?
     // The team can change a drop at ANY status (even started / done)
     const existing = await ServiceTask.findOne({ booking: bookingId, type: "drop" })
-      .select("status assignedTo")
+      .select("status assignedTo dropCharge")
       .lean();
 
     let taskId;
@@ -936,8 +953,13 @@ export const saveDropTask = async (req, res, next) => {
     let billWarning = "";
     if (charge !== null && handover) {
       try {
+        // Price already on the bill from this drop (a cancelled drop's
+        // price was taken off when it was cancelled → 0)
+        const alreadyOnBill =
+          existing && existing.status !== "cancelled" ? num(existing.dropCharge) : 0;
+
         const { handover: saved } = await updateBill({ _id: handover._id }, (h) =>
-          applyDropCharge(h, charge),
+          applyDropDelta(h, charge - alreadyOnBill),
         );
         bill = toBill(saved);
       } catch (err) {
@@ -1004,17 +1026,26 @@ export const updateDropCharge = async (req, res, next) => {
     }
     const charge = Math.round(n);
 
+    const access = await HandoverModel().findById(handoverId).select("bookingId").lean();
+    const dropTask = access?.bookingId
+      ? await ServiceTask.findOne({
+          booking: access.bookingId,
+          type: "drop",
+          status: { $ne: "cancelled" },
+        })
+          .select("dropCharge")
+          .lean()
+      : null;
+
+    if (!dropTask) {
+      throw new HttpError(404, "No drop for this booking. Add a drop first.");
+    }
+
     const { handover, result } = await updateBill({ _id: handoverId }, (h) =>
-      applyDropCharge(h, charge),
+      applyDropDelta(h, charge - num(dropTask.dropCharge)),
     );
 
-    // Keep the drop task's price in step (if there is a live one)
-    if (handover.bookingId) {
-      await ServiceTask.updateOne(
-        { booking: handover.bookingId, type: "drop", status: { $ne: "cancelled" } },
-        { $set: { dropCharge: charge } },
-      );
-    }
+    await ServiceTask.updateOne({ _id: dropTask._id }, { $set: { dropCharge: charge } });
 
     return res.status(200).json({
       success: true,
@@ -1056,9 +1087,8 @@ export const addHandoverPayment = async (req, res, next) => {
       }
 
       const p = h.payment;
-      const totalPaid =
-        num(p.bookingAmountPaid) + num(p.amountReceivedNow) - num(p.refundedAmount);
-      const balance = Math.max(0, money(num(p.totalAmount) - totalPaid));
+      const bs = p.billSummary || {};
+      const balance = Math.max(0, money(bs.balanceAmount)); // what the app shows
 
       if (balance <= 0) {
         throw new HttpError(409, "Nothing is due. The bill is already paid.");
@@ -1080,6 +1110,10 @@ export const addHandoverPayment = async (req, res, next) => {
       h.set(`payment.paymentBreakdown.${key}`, money(num(bd[key]) + amount));
       h.set("payment.paymentMethod", usedOther ? "mixed" : method);
       h.set("payment.customPaymentDate", new Date());
+
+      h.set("payment.billSummary.amountReceivedNow", money(num(bs.amountReceivedNow) + amount));
+      h.set("payment.billSummary.totalCollected", money(num(bs.totalCollected) + amount));
+      h.set("payment.billSummary.balanceAmount", Math.max(0, money(balance - amount)));
     });
 
     return res.status(200).json({
@@ -1115,9 +1149,8 @@ export const addHandoverRefund = async (req, res, next) => {
 
     const { handover } = await updateBill({ _id: handoverId }, (h) => {
       const p = h.payment;
-      const totalPaid =
-        num(p.bookingAmountPaid) + num(p.amountReceivedNow) - num(p.refundedAmount);
-      const refundDue = Math.max(0, money(totalPaid - num(p.totalAmount)));
+      const bs = p.billSummary || {};
+      const refundDue = Math.max(0, money(bs.refundDue)); // what the app shows
 
       if (refundDue <= 0) {
         throw new HttpError(409, "No refund is due on this bill.");
@@ -1132,6 +1165,10 @@ export const addHandoverRefund = async (req, res, next) => {
       const rb = p.refundBreakdown || {};
       h.set("payment.refundedAmount", money(num(p.refundedAmount) + amount));
       h.set(`payment.refundBreakdown.${key}`, money(num(rb[key]) + amount));
+
+      h.set("payment.billSummary.refundedAmount", money(num(bs.refundedAmount) + amount));
+      h.set("payment.billSummary.totalCollected", money(num(bs.totalCollected) - amount));
+      h.set("payment.billSummary.refundDue", Math.max(0, money(refundDue - amount)));
     });
 
     return res.status(200).json({
