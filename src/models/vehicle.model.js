@@ -30,6 +30,12 @@ const vehicleSchema = new mongoose.Schema(
       required: true,
     },
 
+    displayName: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
     vehicleName: {
       type: String,
       required: true,

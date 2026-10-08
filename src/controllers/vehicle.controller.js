@@ -10,6 +10,7 @@ export const createVehicle = async (req, res, next) => {
     const companyId = req.user.company || req.user._id;
 
     const {
+      displayName,
       vehicleName,
       vehicleNumber,
       manufacturer,
@@ -58,6 +59,7 @@ export const createVehicle = async (req, res, next) => {
     const vehicle = await Vehicle.create({
       company: companyId,
       createdBy: req.user._id,
+      displayName: displayName || "",
       vehicleName,
       vehicleNumber: vehicleNumber.toUpperCase(),
       manufacturer,
@@ -122,6 +124,7 @@ export const getAllVehicle = async (req, res, next) => {
         // just the FIRST image (the list only ever shows one cover
         // photo per card) instead of the full images array.
         .select({
+          displayName: 1,
           vehicleName: 1,
           vehicleNumber: 1,
           fuelType: 1,
@@ -211,6 +214,7 @@ export const getAllVehicles = async (req, res, next) => {
         // just the FIRST image (the list only ever shows one cover
         // photo per card) instead of the full images array.
         .select({
+          displayName: 1,
           vehicleName: 1,
           vehicleNumber: 1,
           fuelType: 1,
@@ -376,6 +380,7 @@ export const updateVehicle = async (req, res, next) => {
     }
 
     const allowedFields = [
+      "displayName",
       "vehicleName",
       "vehicleNumber",
       "manufacturer",
