@@ -466,7 +466,7 @@ export const getPhonePeCollectionPayments = async (req, res, next) => {
       : "pending";
 
     const rawPayments = await PaymentHistory.find({
-      paymentMethod: { $in: ["phonepe", "mixed"] },
+      paymentMethod: { $in: ["phonepe", "razorpay", "mixed"] },
     })
       .populate("createdBy", "name fullName email username")
       .populate("collectionHistory.collectedBy", "name fullName email username")
@@ -579,24 +579,24 @@ export const collectPhonePePayment = async (req, res, next) => {
 
     const payment = await PaymentHistory.findOne({
       _id: paymentId,
-      paymentMethod: { $in: ["phonepe", "mixed"] },
+      paymentMethod: { $in: ["phonepe", "razorpay", "mixed"] },
     });
 
     if (!payment) {
-      return res.status(404).json({ success: false, message: "PhonePe payment not found" });
+      return res.status(404).json({ success: false, message: "UPI payment not found" });
     }
 
     const method = String(payment.paymentMethod || "").toLowerCase();
 
     const collectibleAmount =
       method === "mixed"
-        ? Number(payment.paymentBreakdown?.phonePe) || 0
+        ? (Number(payment.paymentBreakdown?.phonePe) || 0) + (Number(payment.paymentBreakdown?.razorpay) || 0)
         : Number(payment.amount) || 0;
 
     if (collectibleAmount <= 0) {
       return res.status(400).json({
         success: false,
-        message: "This payment has no PhonePe amount to collect",
+        message: "This payment has no UPI amount to collect",
       });
     }
 

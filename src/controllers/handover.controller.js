@@ -3175,7 +3175,7 @@ ${updateNote}`
 
           paymentMethod: finalPaymentMethod,
 
-          upiLast4: finalPaymentMethod === "phonepe" ? sanitizedUpiLast4 : [],
+          upiLast4: (finalPaymentMethod === "phonepe" || finalPaymentMethod === "razorpay") ? sanitizedUpiLast4 : [],
 
           paymentBreakdown: {
             cash: finalPaymentMethod === "cash" ? receivedAmount : 0,
