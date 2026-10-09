@@ -24,6 +24,7 @@ import {
   updateRental,
   uploadHandoverImages,
   uploadSingleImage,
+  getPendingPaymentsFromHandovers,
 } from "../controllers/handover.controller.js";
 
 const router = express.Router();
@@ -39,6 +40,7 @@ router.put("/save-single-image/:handoverId",protect,saveSingleHandoverImage);
 router.get("/images/:handoverId",protect,getHandoverImages);
 
 router.get("/active-handovers",protect,getActiveHandovers);
+router.get("/pending-payments",protect,getPendingPaymentsFromHandovers);
 router.get("/single/:id",protect,getSingleHandover);
 router.get("/receive-list", getReceiveCarList);
 
