@@ -86,3 +86,130 @@ export const checkMembershipByPhone = async (req, res) => {
     });
   }
 };
+
+// @desc    Create new membership manually
+// @route   POST /api/v1/memberships
+// @access  Private
+export const createMembership = async (req, res) => {
+  try {
+    const { mobileNumber, customerName, plan, amount, paymentMethod, upiLastFour, paymentDate } = req.body;
+    
+    if (!mobileNumber || !plan || !amount || !paymentMethod) {
+      return res.status(400).json({ success: false, message: "Please provide mobileNumber, plan, amount, and paymentMethod" });
+    }
+
+    if (!['starter', 'plus', 'pro'].includes(plan.toLowerCase())) {
+      return res.status(400).json({ success: false, message: "Plan must be starter, plus, or pro" });
+    }
+
+    let customer = await Customer.findOne({ mobileNumber });
+    
+    if (!customer) {
+      if (!customerName) {
+        return res.status(404).json({ success: false, message: "Customer not found. Please provide a customer name to register them." });
+      }
+      customer = await Customer.create({
+        mobileNumber,
+        customerName
+      });
+    } else if (customerName && customer.customerName !== customerName) {
+      customer.customerName = customerName;
+      await customer.save();
+    }
+
+    // Check if active membership exists
+    const existingMembership = await Membership.findOne({
+      customerId: customer._id,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (existingMembership) {
+      return res.status(400).json({ success: false, message: "Customer already has an active membership" });
+    }
+
+    const membershipId = 'MEM' + Date.now() + Math.floor(Math.random() * 1000);
+    const expiresAt = new Date();
+    expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+
+    const paymentBreakdown = { cash: 0, phonePe: 0, razorpay: 0 };
+    if (paymentMethod.toLowerCase() === 'cash') {
+      paymentBreakdown.cash = Number(amount);
+    } else if (paymentMethod.toLowerCase().includes('phonepe') || paymentMethod.toLowerCase() === 'upi') {
+      paymentBreakdown.phonePe = Number(amount);
+    } else {
+      paymentBreakdown.razorpay = Number(amount);
+    }
+
+    const membership = await Membership.create({
+      membershipId,
+      customerId: customer._id,
+      customerName: customer.customerName || customerName || 'Unknown',
+      createdBy: 'operation_app',
+      plan: plan.toLowerCase(),
+      activatedAt: new Date(),
+      expiresAt,
+      payment: {
+        amount: Number(amount),
+        paymentMethod: paymentMethod.toLowerCase(),
+        paymentBreakdown,
+        upiLastFour: upiLastFour || undefined,
+        status: 'completed',
+        paidAt: paymentDate ? new Date(paymentDate) : new Date()
+      }
+    });
+
+    customer.membershipId = membership._id;
+    await customer.save();
+
+    res.status(201).json({
+      success: true,
+      data: membership,
+      message: "Membership created successfully"
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server Error",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get detailed membership tracker info (history, bookings)
+// @route   GET /api/v1/memberships/:id/tracker
+// @access  Private
+export const getMembershipTracker = async (req, res) => {
+  try {
+    const membership = await Membership.findById(req.params.id).populate('customerId');
+    if (!membership) {
+      return res.status(404).json({ success: false, message: 'Membership not found' });
+    }
+
+    let history = [];
+    if (membership.customerId && membership.customerId.mobileNumber) {
+      const Booking = (await import('../models/booking.model.js')).default;
+      history = await Booking.find({ 
+        mobileNumber: membership.customerId.mobileNumber,
+        membershipDiscount: { $gt: 0 } 
+      })
+        .sort('-createdAt')
+        .limit(100)
+        .select('bookingId pickupDate dropoffDate status totalAmount membershipDiscount createdAt')
+        .lean();
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        membership,
+        history
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Server Error',
+      error: error.message
+    });
+  }
+};

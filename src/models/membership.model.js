@@ -12,6 +12,14 @@ const membershipSchema = new mongoose.Schema({
     required: true,
     unique: true,
   },
+  customerName: {
+    type: String,
+  },
+  createdBy: {
+    type: String,
+    enum: ['customer_app', 'operation_app'],
+    default: 'customer_app',
+  },
   plan: {
     type: String,
     enum: ['starter', 'plus', 'pro'],
@@ -38,7 +46,8 @@ const membershipSchema = new mongoose.Schema({
       phonePe: { type: Number, default: 0 },
       razorpay: { type: Number, default: 0 }
     },
-    paymentId: { type: String, required: true },
+    upiLastFour: { type: String },
+    paymentId: { type: String },
     transactionId: { type: String },
     status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'completed' },
     paidAt: { type: Date, default: Date.now }

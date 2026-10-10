@@ -7,6 +7,8 @@ import PaymentHistory from "../models/paymentHistory.model.js";
 import CustomerAppLead from "../models/customerAppLead.model.js";
 import { sendBookingCreatedMessage } from "../services/wati.service.js";
 import ServiceTask from "../models/ServiceTask.js";
+import Customer from "../models/customer.model.js";
+import Membership from "../models/membership.model.js";
 
 const dashboardCache = new Map();
 const CACHE_TTL_MS = 8000;
@@ -2712,6 +2714,43 @@ export const createBooking = async (req, res, next) => {
     const finalSecurityDeposit = Number(securityDeposit) || 0;
 
     // ============================================================
+    // MEMBERSHIP CHECK
+    // ============================================================
+
+    let membershipDiscountVal = 0;
+    const Customer = (await import('../models/customer.model.js')).default;
+    const Membership = (await import('../models/membership.model.js')).default;
+    const customer = await Customer.findOne({ mobileNumber: mobileNumber.trim() }).lean();
+    
+    if (customer) {
+      const membership = await Membership.findOne({ 
+        customerId: customer._id, 
+        isDeleted: { $ne: true } 
+      }).lean();
+
+      if (membership && membership.plan && (!membership.expiresAt || new Date(membership.expiresAt) > new Date())) {
+        const MEMBERSHIP_PLANS = {
+          starter: { discountRate: 0.05, tripCap: 499, annualCap: 10000 },
+          plus: { discountRate: 0.10, tripCap: 799, annualCap: 15000 },
+          pro: { discountRate: 0.125, tripCap: 999, annualCap: 20000 },
+        };
+        const planConfig = MEMBERSHIP_PLANS[membership.plan];
+        if (planConfig) {
+          const baseFareForDiscount = vehicleRent + pickupCharge + dropCharge;
+          const remainingCap = Math.max(0, planConfig.annualCap - (membership.totalSaved || 0));
+          const calculatedDiscount = Math.min(
+            baseFareForDiscount * planConfig.discountRate,
+            planConfig.tripCap,
+            remainingCap
+          );
+          membershipDiscountVal = Math.round(calculatedDiscount);
+        }
+      }
+    }
+
+    const totalDiscountApplied = finalDiscountAmount + membershipDiscountVal;
+
+    // ============================================================
     // START TRANSACTION
     // ============================================================
 
@@ -2902,7 +2941,8 @@ export const createBooking = async (req, res, next) => {
 
               bookingAmount: advancePaid,
 
-              discountAmount: finalDiscountAmount,
+              discountAmount: totalDiscountApplied,
+              membershipDiscount: membershipDiscountVal,
 
               createdAt: new Date(),
             },
@@ -2919,6 +2959,14 @@ export const createBooking = async (req, res, next) => {
     // ============================================================
     // CREATE BOOKING
     // ============================================================
+
+    if (membershipDiscountVal > 0 && customer) {
+      await Membership.updateOne(
+        { customerId: customer._id },
+        { $inc: { totalSaved: membershipDiscountVal } },
+        { session }
+      );
+    }
 
     const [booking] = await Booking.create(
       [
@@ -2975,7 +3023,8 @@ export const createBooking = async (req, res, next) => {
 
           bookingAmount: advancePaid,
 
-          discountAmount: finalDiscountAmount,
+          discountAmount: totalDiscountApplied,
+          membershipDiscount: membershipDiscountVal,
 
           securityDeposit: finalSecurityDeposit,
 
@@ -2993,7 +3042,7 @@ export const createBooking = async (req, res, next) => {
 
             totalAmount: quotationAmount,
 
-            discountAmount: finalDiscountAmount,
+            discountAmount: totalDiscountApplied,
 
             securityDeposit: finalSecurityDeposit,
 
@@ -3525,6 +3574,40 @@ export const createBookings = async (req, res, next) => {
     const finalSecurityDeposit = Number(securityDeposit) || 0;
 
     // ============================================================
+    // MEMBERSHIP CHECK
+    // ============================================================
+
+    let membershipDiscountVal = 0;
+    const customer = await Customer.findOne({ mobileNumber: mobileNumber.trim() }).session(session).lean();
+    if (customer) {
+      const membership = await Membership.findOne({ 
+        customerId: customer._id, 
+        isDeleted: { $ne: true } 
+      }).session(session).lean();
+
+      if (membership && membership.plan && (!membership.expiresAt || new Date(membership.expiresAt) > new Date())) {
+        const MEMBERSHIP_PLANS = {
+          starter: { discountRate: 0.05, tripCap: 499, annualCap: 10000 },
+          plus: { discountRate: 0.10, tripCap: 799, annualCap: 15000 },
+          pro: { discountRate: 0.125, tripCap: 999, annualCap: 20000 },
+        };
+        const planConfig = MEMBERSHIP_PLANS[membership.plan];
+        if (planConfig) {
+          const baseFareForDiscount = vehicleRent + pickupCharge + dropCharge;
+          const remainingCap = Math.max(0, planConfig.annualCap - (membership.totalSaved || 0));
+          const calculatedDiscount = Math.min(
+            baseFareForDiscount * planConfig.discountRate,
+            planConfig.tripCap,
+            remainingCap
+          );
+          membershipDiscountVal = Math.round(calculatedDiscount);
+        }
+      }
+    }
+
+    const totalDiscountApplied = finalDiscountAmount + membershipDiscountVal;
+
+    // ============================================================
     // START TRANSACTION
     // ============================================================
 
@@ -3698,7 +3781,8 @@ export const createBookings = async (req, res, next) => {
 
               bookingAmount: advancePaid,
 
-              discountAmount: finalDiscountAmount,
+              discountAmount: totalDiscountApplied,
+              membershipDiscount: membershipDiscountVal,
 
               createdAt: new Date(),
             },
@@ -3715,6 +3799,15 @@ export const createBookings = async (req, res, next) => {
     // ============================================================
     // CREATE BOOKING
     // ============================================================
+
+    if (membershipDiscountVal > 0 && customer) {
+      const Membership = (await import('../models/membership.model.js')).default;
+      await Membership.updateOne(
+        { customerId: customer._id },
+        { $inc: { totalSaved: membershipDiscountVal } },
+        { session }
+      );
+    }
 
     const [booking] = await Booking.create(
       [
@@ -3771,7 +3864,8 @@ export const createBookings = async (req, res, next) => {
 
           bookingAmount: advancePaid,
 
-          discountAmount: finalDiscountAmount,
+          discountAmount: totalDiscountApplied,
+          membershipDiscount: membershipDiscountVal,
 
           securityDeposit: finalSecurityDeposit,
 
@@ -3789,7 +3883,7 @@ export const createBookings = async (req, res, next) => {
 
             totalAmount: quotationAmount,
 
-            discountAmount: finalDiscountAmount,
+            discountAmount: totalDiscountApplied,
 
             securityDeposit: finalSecurityDeposit,
 

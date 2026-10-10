@@ -369,6 +369,12 @@ const leadSchema = new mongoose.Schema(
         default: 0,
         min: 0,
       },
+      
+      membershipDiscount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
 
       createdAt: Date,
     },
