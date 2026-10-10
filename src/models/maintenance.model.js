@@ -4,6 +4,13 @@ const { Schema } = mongoose;
 
 const maintenanceSchema = new Schema(
   {
+    // Unique per "Save" attempt from the app. Used to stop the same request
+    // (double tap, network retry) from creating duplicate records.
+    idempotencyKey: {
+      type: String,
+      trim: true,
+    },
+
     vehicle: {
       type: Schema.Types.ObjectId,
       ref: "Vehicle",
@@ -94,10 +101,11 @@ const maintenanceSchema = new Schema(
       min: 0,
     },
 
+    // The app sends an ISO date string; storing it as a Date lets you
+    // sort and query by it.
     expectedCompletionDate: {
-      type: String,
-      trim: true,
-      default: "",
+      type: Date,
+      default: null,
     },
 
     completedDate: {
@@ -175,6 +183,16 @@ const maintenanceSchema = new Schema(
   {
     timestamps: true,
     versionKey: false,
+  }
+);
+
+// Duplicate protection: only one record per idempotency key.
+// Partial filter so old records without a key don't conflict.
+maintenanceSchema.index(
+  { idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string" } },
   }
 );
 

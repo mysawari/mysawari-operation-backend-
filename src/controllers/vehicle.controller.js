@@ -676,6 +676,14 @@ export const uploadMaintenanceImage = async (req, res, next) => {
     });
   }
 };
+const sendDuplicateResponse = (res, existing) =>
+  res.status(200).json({
+    success: true,
+    message: "Maintenance already created",
+    data: existing,
+    duplicate: true,
+  });
+ 
 export const createMaintenance = async (req, res, next) => {
   try {
     const {
@@ -691,106 +699,172 @@ export const createMaintenance = async (req, res, next) => {
       additionalNotes,
       estimatedDays,
     } = req.body;
-
+ 
+    // Header takes priority, body is the fallback
+    const rawKey = req.get("Idempotency-Key") || req.body.idempotencyKey || "";
+    const idempotencyKey = rawKey.toString().trim() || undefined;
+ 
     /* ===============================
        VALIDATION
     =============================== */
-
+ 
     const missing = [];
-
+ 
     if (!vehicle) missing.push("vehicle");
     if (!maintenanceType) missing.push("maintenanceType");
     if (!title?.trim()) missing.push("title");
     if (!description?.trim()) missing.push("description");
     if (!garage?.name?.trim()) missing.push("garage.name");
-
+ 
     if (missing.length) {
       return res.status(400).json({
         success: false,
         message: `Missing required field(s): ${missing.join(", ")}`,
       });
     }
-
+ 
     if (!mongoose.Types.ObjectId.isValid(vehicle)) {
       return res.status(400).json({
         success: false,
         message: "Invalid vehicle id",
       });
     }
-
+ 
     if (!["Major", "Minor"].includes(maintenanceType)) {
       return res.status(400).json({
         success: false,
         message: "Maintenance type must be Major or Minor",
       });
     }
-
+ 
+    /* ===============================
+       DUPLICATE CHECK (FAST PATH)
+       Same request already processed -> return the existing record
+    =============================== */
+ 
+    if (idempotencyKey) {
+      const existing = await Maintenance.findOne({ idempotencyKey });
+      if (existing) return sendDuplicateResponse(res, existing);
+    }
+ 
     /* ===============================
        CHECK VEHICLE EXISTS
     =============================== */
-
+ 
     const existingVehicle = await Vehicle.findOne({
       _id: vehicle,
       isDeleted: false,
     });
-
+ 
     if (!existingVehicle) {
       return res.status(404).json({
         success: false,
         message: "Vehicle not found",
       });
     }
-
+ 
     /* ===============================
        COST CALCULATION
     =============================== */
-
+ 
     const partsCost = Number(costs?.partsCost) || 0;
     const labourCost = Number(costs?.labourCost) || 0;
     const totalCost = Number(costs?.totalCost) || partsCost + labourCost;
-
+ 
+    /* ===============================
+       DATES
+       startDate / endDate are required by the schema
+    =============================== */
+ 
+    const startDate = new Date();
+ 
+    let completionDate = null;
+    if (expectedCompletionDate) {
+      const parsed = new Date(expectedCompletionDate);
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid expected completion date",
+        });
+      }
+      completionDate = parsed;
+    }
+ 
+    const endDate =
+      completionDate && completionDate > startDate ? completionDate : startDate;
+ 
     /* ===============================
        CREATE MAINTENANCE
     =============================== */
-
-    const maintenance = await Maintenance.create({
-      vehicle: existingVehicle._id,
-
-      maintenanceType,
-
-      title: title.trim(),
-
-      description: description.trim(),
-
-      garage: {
-        name: garage.name.trim(),
-        contact: garage.contact?.trim() || "",
-        address: garage.address?.trim() || "",
-        gstin: garage.gstin?.trim() || "",
-      },
-
-      costs: {
-        partsCost,
-        labourCost,
-        totalCost,
-      },
-
-      odometer:
-        odometer !== "" && odometer !== undefined ? Number(odometer) : null,
-
-      expectedCompletionDate,
-
-      images: Array.isArray(images) ? images : [],
-
-      additionalNotes: additionalNotes?.trim() || "",
-
-      createdBy: req.user._id,
-    });
-
+ 
+    let maintenance;
+ 
+    try {
+      maintenance = await Maintenance.create({
+        idempotencyKey,
+ 
+        vehicle: existingVehicle._id,
+ 
+        startDate,
+        endDate,
+ 
+        maintenanceType,
+ 
+        title: title.trim(),
+ 
+        description: description.trim(),
+ 
+        garage: {
+          name: garage.name.trim(),
+          contact: garage.contact?.trim() || "",
+          address: garage.address?.trim() || "",
+          gstin: garage.gstin?.trim() || "",
+        },
+ 
+        costs: {
+          partsCost,
+          labourCost,
+          totalCost,
+        },
+ 
+        odometer:
+          odometer !== "" && odometer !== undefined && odometer !== null
+            ? Number(odometer)
+            : null,
+ 
+        expectedCompletionDate: completionDate,
+ 
+        images: Array.isArray(images) ? images : [],
+ 
+        additionalNotes: additionalNotes?.trim() || "",
+ 
+        statusHistory: [
+          {
+            status: "Scheduled",
+            changedBy: req.user._id,
+            note: "Maintenance created",
+          },
+        ],
+ 
+        createdBy: req.user._id,
+      });
+    } catch (createError) {
+      // Two identical requests arrived at the same moment: the unique
+      // index let only one through, so return that one.
+      if (
+        createError?.code === 11000 &&
+        createError?.keyPattern?.idempotencyKey
+      ) {
+        const existing = await Maintenance.findOne({ idempotencyKey });
+        if (existing) return sendDuplicateResponse(res, existing);
+      }
+      throw createError;
+    }
+ 
     /* ===============================
        VEHICLE STATUS UPDATE - TEMPORARILY DISABLED
     =============================== */
-
+ 
     // try {
     //   const updatedVehicle = await Vehicle.findByIdAndUpdate(
     //     existingVehicle._id,
@@ -801,8 +875,7 @@ export const createMaintenance = async (req, res, next) => {
     //         "maintenance.currentMaintenance": maintenance._id,
     //         "maintenance.reason": title.trim(),
     //         "maintenance.estimatedDays": Number(estimatedDays) || 0,
-    //         "maintenance.estimatedCompletionDate":
-    //           expectedCompletionDate || null,
+    //         "maintenance.estimatedCompletionDate": completionDate,
     //         "maintenance.markedBy": req.user._id,
     //         "maintenance.markedAt": new Date(),
     //       },
@@ -812,9 +885,8 @@ export const createMaintenance = async (req, res, next) => {
     //     },
     //     { new: true },
     //   );
-
+    //
     //   if (!updatedVehicle) {
-    //     // Rollback maintenance record if vehicle update somehow failed
     //     await Maintenance.findByIdAndDelete(maintenance._id);
     //     return res.status(500).json({
     //       success: false,
@@ -822,11 +894,10 @@ export const createMaintenance = async (req, res, next) => {
     //     });
     //   }
     // } catch (vehicleUpdateError) {
-    //   // Rollback maintenance record on error
     //   await Maintenance.findByIdAndDelete(maintenance._id);
     //   throw vehicleUpdateError;
     // }
-
+ 
     return res.status(201).json({
       success: true,
       message: "Maintenance created successfully",
@@ -837,87 +908,161 @@ export const createMaintenance = async (req, res, next) => {
   }
 };
 
+const MAX_LIMIT = 50;
+ 
+// The app shows "Pending" / "Ongoing", the DB stores "Scheduled" /
+// "In Progress". Accept both so the API is forgiving.
+const STATUS_ALIASES = {
+  pending: "Scheduled",
+  scheduled: "Scheduled",
+  ongoing: "In Progress",
+  "in progress": "In Progress",
+  in_progress: "In Progress",
+  completed: "Completed",
+  cancelled: "Cancelled",
+  canceled: "Cancelled",
+};
+ 
+// Escape user input before putting it into a RegExp, so characters like
+// "(" or "+" in a search don't throw or match unexpectedly.
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+ 
+const parseDate = (value) => {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+ 
 export const getMaintenances = async (req, res, next) => {
   try {
-    const {
-      status,
-      maintenanceType,
-      vehicle,
-      search,
-      page = 1,
-      limit = 20,
-    } = req.query;
-
-    const filter = {
-      isDeleted: false,
-    };
-
+    const { status, maintenanceType, vehicle, search, createdFrom, createdTo } =
+      req.query;
+ 
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 20, 1),
+      MAX_LIMIT,
+    );
+ 
+    /* ===============================
+       BUILD FILTER (runs in MongoDB, not in Node)
+    =============================== */
+ 
+    const filter = { isDeleted: false };
+ 
     if (status) {
-      filter.status = status;
+      const mapped = STATUS_ALIASES[String(status).trim().toLowerCase()];
+      if (!mapped) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid status filter",
+        });
+      }
+      filter.status = mapped;
     }
-
+ 
     if (maintenanceType) {
+      if (!["Major", "Minor"].includes(maintenanceType)) {
+        return res.status(400).json({
+          success: false,
+          message: "Maintenance type must be Major or Minor",
+        });
+      }
       filter.maintenanceType = maintenanceType;
     }
-
-    if (vehicle && mongoose.Types.ObjectId.isValid(vehicle)) {
-      filter.vehicle = vehicle;
+ 
+    if (vehicle) {
+      if (!mongoose.Types.ObjectId.isValid(vehicle)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid vehicle id",
+        });
+      }
+      filter.vehicle = new mongoose.Types.ObjectId(vehicle);
     }
-
-    let query = Maintenance.find(filter)
-      .populate({
-        path: "vehicle",
-        select: `
-          vehicleName
-          vehicleNumber
-          manufacturer
-          model
-          variant
-          vehicleType
-          fuelType
-          transmission
-          seatingCapacity
-          images
-          status
-        `,
-      })
-      .populate({
-        path: "createdBy",
-        select: "name fullName email",
-      })
-      .sort({
-        createdAt: -1,
-      });
-
-    const maintenances = await query.lean();
-
-    let data = maintenances;
-
-    if (search) {
-      const keyword = search.toLowerCase();
-
-      data = maintenances.filter((item) => {
-        return (
-          item.title?.toLowerCase().includes(keyword) ||
-          item.description?.toLowerCase().includes(keyword) ||
-          item.garage?.name?.toLowerCase().includes(keyword) ||
-          item.vehicle?.vehicleName?.toLowerCase().includes(keyword) ||
-          item.vehicle?.vehicleNumber?.toLowerCase().includes(keyword)
-        );
-      });
+ 
+    // Date range on createdAt. The app sends the start/end of the month
+    // in the user's own timezone, so "This Month" is correct for India.
+    const from = parseDate(createdFrom);
+    const to = parseDate(createdTo);
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = from;
+      if (to) filter.createdAt.$lt = to;
     }
-
-    const start = (Number(page) - 1) * Number(limit);
-    const end = start + Number(limit);
-
-    const result = data.slice(start, end);
-
+ 
+    // Search: title, description and garage live on the maintenance,
+    // vehicle name / number live on the vehicle. Find matching vehicles
+    // first (one small query), then match either side in the DB.
+    const keyword = search ? String(search).trim() : "";
+    if (keyword) {
+      const regex = new RegExp(escapeRegex(keyword), "i");
+ 
+      const vehicleIds = await Vehicle.distinct("_id", {
+        $or: [{ vehicleName: regex }, { vehicleNumber: regex }],
+      });
+ 
+      const or = [
+        { title: regex },
+        { description: regex },
+        { "garage.name": regex },
+      ];
+      if (vehicleIds.length) {
+        or.push({ vehicle: { $in: vehicleIds } });
+      }
+ 
+      filter.$or = or;
+    }
+ 
+    /* ===============================
+       QUERY ONE PAGE + COUNT IN PARALLEL
+    =============================== */
+ 
+    const skip = (page - 1) * limit;
+ 
+    const [total, data] = await Promise.all([
+      Maintenance.countDocuments(filter),
+ 
+      Maintenance.find(filter)
+        // The list card doesn't need these, and statusHistory grows over time
+        .select("-statusHistory -completionProof -idempotencyKey")
+        .populate({
+          path: "vehicle",
+          // Only the first vehicle image is used on the card, so don't
+          // send the whole gallery for every row.
+          select: {
+            vehicleName: 1,
+            vehicleNumber: 1,
+            manufacturer: 1,
+            model: 1,
+            variant: 1,
+            vehicleType: 1,
+            fuelType: 1,
+            transmission: 1,
+            seatingCapacity: 1,
+            status: 1,
+            images: { $slice: 1 },
+          },
+        })
+        .populate({
+          path: "createdBy",
+          select: "name fullName",
+        })
+        // _id as a tie-breaker keeps pages stable when createdAt is equal
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+ 
     return res.status(200).json({
       success: true,
-      total: data.length,
-      page: Number(page),
-      limit: Number(limit),
-      data: result,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      hasMore: skip + data.length < total,
+      data,
     });
   } catch (error) {
     next(error);
