@@ -194,7 +194,7 @@ export const getMembershipTracker = async (req, res) => {
       })
         .sort('-createdAt')
         .limit(100)
-        .select('bookingId pickupDate dropoffDate status totalAmount membershipDiscount createdAt')
+        .select('bookingId bookingCode fromDate toDate status payment membershipDiscount createdAt')
         .lean();
     }
 

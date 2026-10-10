@@ -411,6 +411,7 @@ export const getHandoverById = async (req, res) => {
     }
 
     const handover = await Handover.findById(id)
+      .populate("bookingId")
       .populate("createdBy", "fullName email mobileNumber role")
       .populate("vehicle.vehicleId")
       .populate("extensionBills.createdBy", "fullName email")
