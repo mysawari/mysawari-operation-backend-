@@ -10,7 +10,13 @@ const ADMIN_API_KEY = process.env.CUSTOMER_ADMIN_API_KEY || "mysawari_admin_secr
 // @route   POST /api/v1/notifications/send
 // @access  Private (Admin)
 export const sendNotification = asyncHandler(async (req, res) => {
-  const { title, body, target, customerId, data } = req.body;
+  let { title, body, target, customerId, data, imageUrl } = req.body;
+  if (req.file) imageUrl = req.file.path;
+
+  // Handle parsing of customerId if it comes as a string array from FormData
+  if (typeof customerId === 'string' && customerId.startsWith('[')) {
+    try { customerId = JSON.parse(customerId); } catch(e) {}
+  }
 
   if (!title || !body) {
     return res.status(400).json({
@@ -31,6 +37,7 @@ export const sendNotification = asyncHandler(async (req, res) => {
             target: "specific",
             customerId: id,
             payload: data || {},
+            imageUrl,
           },
           { headers: { "x-admin-key": ADMIN_API_KEY } }
         )
@@ -52,6 +59,7 @@ export const sendNotification = asyncHandler(async (req, res) => {
         target: target || "all",
         customerId: target === "specific" ? customerId : null,
         payload: data || {},
+        imageUrl,
       },
       { headers: { "x-admin-key": ADMIN_API_KEY } }
     );
