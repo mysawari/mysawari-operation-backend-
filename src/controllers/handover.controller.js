@@ -3637,3 +3637,49 @@ export const discardHandoverDraft = async (req, res) => {
     });
   }
 };
+
+export const getPendingPaymentsFromHandovers = async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 500));
+    const skip = (page - 1) * limit;
+
+    const companyId = req.user?.company || req.user?._id;
+    if (!companyId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    const handovers = await Handover.find({
+      company: companyId,
+      isDeleted: false,
+      bookingStatus: { $nin: ["draft", "cancelled"] },
+      "payment.paymentStatus": { $in: ["pending", "partial"] },
+      "payment.balanceAmount": { $gt: 0 }
+    })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const mapped = handovers.map((h) => ({
+      _id: h._id,
+      paymentMethod: h.payment?.paymentMethod || "UNKNOWN",
+      type: "HANDOVER",
+      customer: {
+        fullName: h.customer?.fullName || "Customer",
+        mobileNumber: h.customer?.mobileNumber || "N/A"
+      },
+      remainingAmount: h.payment?.balanceAmount || 0,
+      amount: h.payment?.totalAmount || 0,
+      createdAt: h.createdAt
+    }));
+
+    return res.status(200).json({
+      success: true,
+      data: mapped
+    });
+  } catch (error) {
+    console.error("Get Pending Payments From Handovers Error:", error);
+    next(error);
+  }
+};
