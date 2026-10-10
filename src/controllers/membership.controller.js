@@ -102,14 +102,24 @@ export const createMembership = async (req, res) => {
       return res.status(400).json({ success: false, message: "Plan must be starter, plus, or pro" });
     }
 
-    let customer = await Customer.findOne({ mobileNumber });
+    // Sanitize mobileNumber to just the 10 digits (match Customer App behavior)
+    let sanitizedMobile = String(mobileNumber).trim()
+      .replace(/\D/g, '')                       
+      .replace(/^(?:91|0)(?=\d{10}$)/, '');     
+
+    if (sanitizedMobile.length !== 10) {
+      // Fallback to what they provided if it isn't an Indian number, so we don't break existing logic
+      sanitizedMobile = mobileNumber;
+    }
+
+    let customer = await Customer.findOne({ mobileNumber: sanitizedMobile });
     
     if (!customer) {
       if (!customerName) {
         return res.status(404).json({ success: false, message: "Customer not found. Please provide a customer name to register them." });
       }
       customer = await Customer.create({
-        mobileNumber,
+        mobileNumber: sanitizedMobile,
         customerName
       });
     } else if (customerName && customer.customerName !== customerName) {

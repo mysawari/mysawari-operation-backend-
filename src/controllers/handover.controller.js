@@ -892,6 +892,7 @@ export const createHandover = async (req, res, next) => {
           amount: Number(payment.amountReceivedNow),
 
           paymentMethod: payment?.paymentMethod || "cash",
+          customPaymentDate: payment?.customPaymentDate ? new Date(payment.customPaymentDate) : null,
           upiLast4: normalizedUpiLast4,
 
           paymentBreakdown: {
@@ -2549,6 +2550,7 @@ export const updateRental = async (req, res) => {
       // NEW: refund handed back to the customer in this update
       amountRefundedNow,
       refundMethod,
+      customPaymentDate,
     } = req.body;
 
     // ==========================================================
@@ -3175,6 +3177,7 @@ ${updateNote}`
           amount: receivedAmount,
 
           paymentMethod: finalPaymentMethod,
+          customPaymentDate: customPaymentDate ? new Date(customPaymentDate) : null,
 
           upiLast4: (finalPaymentMethod === "phonepe" || finalPaymentMethod === "razorpay") ? sanitizedUpiLast4 : [],
 
@@ -3248,6 +3251,7 @@ ${updateNote}`
           },
 
           amount: refundNow,
+          customPaymentDate: customPaymentDate ? new Date(customPaymentDate) : null,
 
           paymentMethod: refundMethod,
 

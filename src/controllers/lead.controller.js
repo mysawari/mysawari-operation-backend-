@@ -1901,6 +1901,7 @@ export const createLeadBooking = async (req, res, next) => {
       // NEW: how the advance was collected
       paymentMethod = "cash", // "cash" | "phonepe" | "razorpay" | "mixed"
       paymentBreakdown = {}, // { cash, phonePe, razorpay } — required when paymentMethod === "mixed"
+      customPaymentDate,
 
       // PICKUP / DROP SERVICE FIELDS FROM MOBILE APP
       pickupDropRequired,
@@ -2101,6 +2102,7 @@ export const createLeadBooking = async (req, res, next) => {
         securityDeposit: finalSecurityDeposit,
         bookingAmountPaid: advancePaid,
         paymentMethod,
+        customPaymentDate: customPaymentDate ? new Date(customPaymentDate) : null,
         paymentBreakdown: breakdown,
         // balanceAmount / totalCollected / paymentStatus are computed
         // by the pre("save") hook on the Booking model.
@@ -2143,6 +2145,7 @@ export const createLeadBooking = async (req, res, next) => {
           amount: advancePaid,
 
           paymentMethod: paymentMethod,
+          customPaymentDate: customPaymentDate ? new Date(customPaymentDate) : null,
 
           paymentBreakdown: {
             cash: Number(breakdown.cash) || 0,
